@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-09-26
+goal: 运行中只允许编辑名称和启动网址，并对其他受保护字段显示锁定提示

@@ -1,0 +1,64 @@
+appId: com.local.chromeprofilebrowser
+productName: 简约指纹
+artifactName: chrome-profile-browser-${version}-${os}-${arch}.${ext}
+copyright: Copyright © 2026 Chrome Profile Browser contributors
+asar: true
+
+directories:
+  output: release
+  buildResources: src/assets
+
+files:
+  - src/**/*
+  - package.json
+  - '!test/**'
+  - '!openspec/**'
+  - '!docs/**'
+  - '!scripts/**'
+  - '!work/**'
+  - '!vendor/**'
+  - '!release/**'
+  - '!.palette/**'
+  - '!**/*.md'
+  - '!package-lock.json'
+
+win:
+  icon: src/assets/brand-icon-1024.png
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  extraResources:
+    - from: vendor/cores
+      to: vendor/cores
+      filter:
+        - win32-x64/**/*
+        - '*.md'
+        - '*.txt'
+
+nsis:
+  artifactName: chrome-profile-browser-${version}-win-${arch}-installer.${ext}
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: 简约指纹
+
+portable:
+  artifactName: chrome-profile-browser-${version}-win-${arch}-portable.${ext}
+
+mac:
+  icon: src/assets/brand-icon-1024.png
+  category: public.app-category.developer-tools
+  identity: null
+  target:
+    - dmg
+    - zip
+
+dmg:
+  artifactName: chrome-profile-browser-${version}-mac-${arch}.${ext}
+  sign: false
+
+publish: null

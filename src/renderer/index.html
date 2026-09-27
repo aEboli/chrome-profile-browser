@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data: https://lhimg.crxsoso.com https://*.crxsoso.com https://*.googleusercontent.com https://*.gstatic.com; connect-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>简约指纹</title>
+    <link rel="icon" type="image/svg+xml" href="../assets/brand-icon-light.svg" media="(prefers-color-scheme: light)" />
+    <link rel="icon" type="image/svg+xml" href="../assets/brand-icon.svg" media="(prefers-color-scheme: dark)" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <svg class="svg-sprite" aria-hidden="true" focusable="false">
+      <symbol id="icon-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></symbol>
+      <symbol id="icon-list" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+      <symbol id="icon-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1Z"/></symbol>
+      <symbol id="icon-nodes" viewBox="0 0 24 24"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="m8.7 10.7 6.6-3.4M8.7 13.3l6.6 3.4"/></symbol>
+      <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol>
+      <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.7-4L3 10"/><path d="M3 5v5h5M4 13a8 8 0 0 0 14.7 4L21 14"/><path d="M21 19v-5h-5"/></symbol>
+      <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="icon-download" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 20h14"/></symbol>
+      <symbol id="icon-cloud" viewBox="0 0 24 24"><path d="M7 18h10a4 4 0 0 0 .5-8A5.5 5.5 0 0 0 7 9a4.5 4.5 0 0 0 0 9Z"/><path d="M12 11v6M9.5 14.5 12 17l2.5-2.5"/></symbol>
+      <symbol id="icon-upload" viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5M5 20h14"/></symbol>
+      <symbol id="icon-calendar" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16M8 14h.01M12 14h.01M16 14h.01M8 17h.01M12 17h.01M16 17h.01"/></symbol>
+      <symbol id="icon-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.5 2"/></symbol>
+      <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 5 5"/></symbol>
+      <symbol id="icon-star" viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9Z"/></symbol>
+      <symbol id="icon-arrow-right" viewBox="0 0 24 24"><path d="M4 12h15M13 6l6 6-6 6"/></symbol>
+      <symbol id="icon-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+      <symbol id="icon-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+      <symbol id="icon-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z"/></symbol>
+      <symbol id="icon-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></symbol>
+      <symbol id="icon-edit" viewBox="0 0 24 24"><path d="m4 16-.8 4.8L8 20l10.8-10.8a2.8 2.8 0 0 0-4-4Z"/><path d="m13.5 6.5 4 4"/></symbol>
+      <symbol id="icon-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 10v6M12 7h.01"/></symbol>
+      <symbol id="icon-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 11v6M14 11v6M8 7l1-3h6l1 3m-9 0 1 13h10l1-13"/></symbol>
+      <symbol id="icon-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+      <symbol id="icon-zap" viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 11-14h-7Z"/></symbol>
+      <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+      <symbol id="icon-filter" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></symbol>
+      <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></symbol>
+      <symbol id="icon-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></symbol>
+      <symbol id="icon-link" viewBox="0 0 24 24"><path d="m10 14 4-4M8 17H6a4 4 0 0 1 0-8h4M16 7h2a4 4 0 0 1 0 8h-4"/></symbol>
+      <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol>
+      <symbol id="icon-puzzle" viewBox="0 0 24 24"><path d="M9 4a3 3 0 1 1 5.8 1H19a1 1 0 0 1 1 1v4.2a3 3 0 1 0 0 5.6V19a1 1 0 0 1-1 1h-4.2a3 3 0 1 0-5.6 0H5a1 1 0 0 1-1-1v-4.2a3 3 0 1 0 0-5.6V6a1 1 0 0 1 1-1h4.2A3 3 0 0 1 9 4Z"/></symbol>
+      <symbol id="icon-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9m-3 3 3 3m-6 0 3 3"/></symbol>
+      <symbol id="icon-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></symbol>
+    </svg>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="主导航">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true"><img class="brand-mark-image" src="../assets/brand-icon.svg" alt="" /></div>
+          <div>
+            <strong id="brand-name">简约指纹</strong>
+            <span id="brand-description">本地隔离浏览器环境与连接节点管理</span>
+          </div>
+        </div>
+
+        <nav class="primary-nav">
+          <button class="nav-item is-active" type="button" data-view-target="overview">
+            <span class="nav-icon" aria-hidden="true"><svg class="svg-icon"><use href="#icon-home"></use></svg></span>
+            <span class="nav-label">概览</span>
+          </button>
+          <button class="nav-item" type="button" data-view-target="profiles">
+            <span class="nav-icon" aria-hidden="true"><svg class="svg-icon"><use href="#icon-grid"></use></svg></span>
+            <span class="nav-label">环境</span>
+            <span class="nav-count" id="profile-nav-count">0</span>
+          </button>
+          <button class="nav-item" type="button" data-view-target="nodes">
+            <span class="nav-icon" aria-hidden="true"><svg class="svg-icon"><use href="#icon-nodes"></use></svg></span>
+            <span class="nav-label">节点</span>
+            <span class="nav-count" id="node-nav-count">0</span>
+          </button>
+          <button class="nav-item" type="button" data-view-target="passwords">
+            <span class="nav-icon" aria-hidden="true"><svg class="svg-icon"><use href="#icon-key"></use></svg></span>
+            <span class="nav-label">密码簿</span>
+            <span class="nav-count" id="password-nav-count">0</span>
+          </button>
+          <button class="nav-item" type="button" data-view-target="settings">
+            <span class="nav-icon" aria-hidden="true"><svg class="svg-icon"><use href="#icon-settings"></use></svg></span>
+            <span class="nav-label">设置</span>
+          </button>
+          <button class="nav-item" type="button" data-view-target="agent">
+            <span class="nav-icon" aria-hidden="true"><svg class="svg-icon"><use href="#icon-zap"></use></svg></span>
+            <span class="nav-label">Agent 配置</span>
+          </button>
+          <button class="nav-item" type="button" data-view-target="extensions">
+            <span class="nav-icon" aria-hidden="true"><svg class="svg-icon"><use href="#icon-puzzle"></use></svg></span>
+            <span class="nav-label">插件管理</span>
+            <span class="nav-count" id="extension-nav-count">0</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="connection-indicator">
+            <span class="status-dot status-dot--good" aria-hidden="true"></span>
+            <span>本地数据模式</span>
+          </div>
+          <span class="version-label">版本</span>
+        </div>
+      </aside>
+
+      <div class="main-column">
+        <main class="content" id="app-content">
+          <section class="view view--launchpad is-visible" data-view="launchpad" aria-labelledby="launchpad-heading">
+            <div class="launchpad-shell">
+              <div class="launchpad-brand" aria-hidden="true"><img src="../assets/brand-icon.svg" alt="" /></div>
+              <p class="launchpad-kicker">简约指纹</p>
+              <h2 id="launchpad-heading">谁在使用简约指纹？</h2>
+              <div class="launchpad-grid" id="launchpad-profiles" aria-label="浏览器环境">
+                <!-- Profile cards are rendered by renderer.js. -->
+              </div>
+              <div class="launchpad-footer">
+                <span class="launchpad-hint"><span class="status-dot status-dot--good" aria-hidden="true"></span><span id="launchpad-summary">本地环境数据</span></span>
+                <span class="launchpad-version" id="launchpad-version"></span>
+              </div>
+            </div>
+          </section>
+
+          <section class="view" data-view="overview" aria-label="概览" hidden>
+            <div class="metric-grid" aria-label="工作区统计">
+              <article class="metric-card">
+                <div class="metric-label"><span class="metric-icon metric-icon--blue" aria-hidden="true"><svg class="svg-icon"><use href="#icon-grid"></use></svg></span>环境总数</div>
+                <strong class="metric-value" id="metric-profiles">0</strong>
+                <span class="metric-foot">持久化配置</span>
+              </article>
+              <article class="metric-card">
+                <div class="metric-label"><span class="metric-icon metric-icon--green" aria-hidden="true"><svg class="svg-icon"><use href="#icon-play"></use></svg></span>运行中</div>
+                <strong class="metric-value" id="metric-running">0</strong>
+                <span class="metric-foot">当前打开的环境</span>
+              </article>
+              <article class="metric-card">
+                <div class="metric-label"><span class="metric-icon metric-icon--amber" aria-hidden="true"><svg class="svg-icon"><use href="#icon-nodes"></use></svg></span>可用节点</div>
+                <strong class="metric-value" id="metric-nodes">0</strong>
+                <span class="metric-foot">已通过最近检查</span>
+              </article>
+              <div class="metric-card overview-actions-card" aria-label="快捷操作">
+                <button class="button button--primary" type="button" data-action="new-profile">
+                  <span aria-hidden="true"><svg class="svg-icon"><use href="#icon-plus"></use></svg></span> 新建环境
+                </button>
+                <button class="button button--secondary" type="button" data-action="import-subscription">
+                  <span aria-hidden="true"><svg class="svg-icon"><use href="#icon-cloud"></use></svg></span> 导入订阅
+                </button>
+              </div>
+            </div>
+
+            <div class="dashboard-grid">
+              <section class="panel panel--recent" aria-labelledby="recent-heading">
+                <div class="panel-heading">
+                  <div>
+                    <p class="eyebrow">快速访问</p>
+                    <h3 id="recent-heading">最近使用的环境</h3>
+                  </div>
+                  <button class="text-button" type="button" data-view-target="profiles">查看全部 <span aria-hidden="true"><svg class="svg-icon"><use href="#icon-arrow-right"></use></svg></span></button>
+                </div>
+                <div class="profile-list" id="recent-profiles"></div>
+                <div class="empty-state empty-state--compact" id="recent-empty">
+                  <span class="empty-icon" aria-hidden="true"><svg class="svg-icon"><use href="#icon-grid"></use></svg></span>
+                  <strong>还没有环境</strong>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <section class="view" data-view="profiles" aria-label="环境" hidden>
+            <div class="table-panel profile-table-panel">
+              <div class="table-head profile-grid" role="row">
+                <span>环境</span><span>IP 信息</span><span>状态</span><span>使用流量</span><span>最近使用</span><span class="align-right">操作</span>
+              </div>
+              <div class="profile-table-actions">
+                <label class="search-field">
+                  <span class="sr-only">搜索环境</span>
+                  <span aria-hidden="true"><svg class="svg-icon"><use href="#icon-search"></use></svg></span>
+                  <input id="profile-search" type="search" placeholder="搜索环境" autocomplete="off" />
+                </label>
+                <button class="button button--primary" type="button" data-action="new-profile"><span aria-hidden="true"><svg class="svg-icon"><use href="#icon-plus"></use></svg></span> 新建环境</button>
+              </div>
+              <div class="table-body" id="profiles-table" role="rowgroup"></div>
+              <div class="empty-state" id="profiles-empty" hidden>
+                <span class="empty-icon" aria-hidden="true"><svg class="svg-icon"><use href="#icon-grid"></use></svg></span>
+                <strong>没有匹配的环境</strong>
+                <button class="button button--secondary" type="button" data-action="new-profile">新建环境</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="view" data-view="nodes" aria-label="连接节点" hidden>
+            <div class="node-workbench-heading node-workbench-heading--actions-only">
+              <div class="node-toolbar-actions">
+                <button class="button button--secondary" id="batch-check-nodes" type="button" data-action="check-visible-nodes" title="检查当前筛选结果中的节点"><svg class="svg-icon"><use href="#icon-zap"></use></svg><span>批量检查</span></button>
+                <button class="button button--secondary" type="button" data-action="refresh-all-subscriptions"><svg class="svg-icon"><use href="#icon-refresh"></use></svg> 更新订阅</button>
+                <button class="button button--secondary" type="button" data-action="add-node"><svg class="svg-icon"><use href="#icon-plus"></use></svg> 添加节点</button>
+                <button class="button button--primary" type="button" data-action="import-subscription"><svg class="svg-icon"><use href="#icon-cloud"></use></svg> 导入订阅</button>
+              </div>
+            </div>
+            <div class="node-toolbar panel">
+              <label class="search-field node-search">
+                <span class="sr-only">搜索节点</span>
+                <svg class="svg-icon" aria-hidden="true"><use href="#icon-search"></use></svg>
+                <input id="node-search" type="search" placeholder="搜索节点、地址或协议" autocomplete="off" />
+              </label>
+              <label class="core-default-select"><span>新导入节点默认核心</span><select id="default-core" class="inline-select"><option value="xray">Xray-core</option><option value="singbox">sing-box</option></select></label>
+              <span class="node-toolbar-spacer"></span>
+              <span class="node-summary" id="node-summary">0 个节点</span>
+            </div>
+            <section class="subscription-panel panel" aria-labelledby="subscriptions-heading">
+              <div class="panel-heading subscription-panel-heading">
+                <div><p class="eyebrow">在线同步</p><h3 id="subscriptions-heading">订阅源</h3></div>
+                <div class="subscription-panel-tools">
+                  <label class="search-field subscription-search">
+                    <span class="sr-only">搜索订阅</span>
+                    <svg class="svg-icon" aria-hidden="true"><use href="#icon-search"></use></svg>
+                    <input id="subscription-search" type="search" placeholder="搜索订阅" autocomplete="off" />
+                  </label>
+                  <span class="muted subscription-summary" id="subscription-summary">0 个订阅</span>
+                </div>
+              </div>
+              <div class="subscription-list" id="subscriptions-table"></div>
+              <div class="empty-state empty-state--compact" id="subscriptions-empty"><strong>还没有在线订阅</strong></div>
+            </section>
+            <section class="node-groups panel" aria-labelledby="node-groups-heading">
+              <div class="node-groups-heading"><span id="node-groups-heading">分组</span><span class="muted" id="node-group-count">0</span></div>
+              <div id="node-groups-list" class="node-groups-list" role="tablist" aria-label="节点分组"></div>
+            </section>
+            <div class="node-layout">
+              <div class="table-panel node-table-panel">
+                <div class="table-head node-grid" role="row">
+                  <span>节点</span><span>协议</span><span>地址</span><span>IP 地址</span><span>核心</span><span>状态</span><span class="align-right">操作</span>
+                </div>
+                <div class="table-body" id="nodes-table" role="rowgroup"></div>
+                <div class="empty-state" id="nodes-empty" hidden>
+                  <span class="empty-icon" aria-hidden="true"><svg class="svg-icon"><use href="#icon-nodes"></use></svg></span>
+                  <strong>还没有连接节点</strong>
+                  <div class="empty-actions"><button class="button button--secondary" type="button" data-action="add-node">添加节点</button><button class="button button--secondary" type="button" data-action="import-subscription">导入订阅</button></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="view" data-view="extensions" aria-label="插件管理" hidden>
+            <div class="section-toolbar extension-workbench-heading toolbar-row--actions-only">
+              <div class="toolbar-actions">
+                <button class="button button--secondary" id="update-all-extensions" type="button" data-action="update-all-extensions" disabled><svg class="svg-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg><span>批量更新</span></button>
+                <label class="search-field">
+                  <span class="sr-only">搜索插件</span>
+                  <span aria-hidden="true"><svg class="svg-icon"><use href="#icon-search"></use></svg></span>
+                  <input id="extension-search" type="search" placeholder="搜索插件" autocomplete="off" />
+                </label>
+                <button class="button button--secondary" type="button" data-action="browse-extension-store"><svg class="svg-icon" aria-hidden="true"><use href="#icon-search"></use></svg> 浏览插件商店</button>
+                <button class="button button--secondary" type="button" data-action="install-extension-store"><svg class="svg-icon" aria-hidden="true"><use href="#icon-download"></use></svg> 从 Chrome Web Store 安装</button>
+                <button class="button button--primary" type="button" data-action="import-extension"><span aria-hidden="true"><svg class="svg-icon"><use href="#icon-plus"></use></svg></span> 导入插件</button>
+              </div>
+            </div>
+            <div class="plugin-list" id="extensions-list"></div>
+            <div class="empty-state" id="extensions-empty">
+              <span class="empty-icon" aria-hidden="true"><svg class="svg-icon"><use href="#icon-puzzle"></use></svg></span>
+              <strong>还没有插件</strong>
+              <div class="empty-actions"><button class="button button--secondary" type="button" data-action="browse-extension-store"><svg class="svg-icon" aria-hidden="true"><use href="#icon-search"></use></svg> 浏览插件商店</button><button class="button button--secondary" type="button" data-action="install-extension-store"><svg class="svg-icon" aria-hidden="true"><use href="#icon-download"></use></svg> 从 Chrome Web Store 安装</button><button class="button button--secondary" type="button" data-action="import-extension">导入插件</button></div>
+            </div>
+          </section>
+
+          <section class="view" data-view="passwords" aria-label="密码簿" hidden>
+            <div class="password-workbench">
+              <div class="section-toolbar toolbar-row--actions-only">
+                <div class="toolbar-actions password-toolbar-actions">
+                  <label class="password-profile-picker">
+                    <span>浏览器环境</span>
+                    <select class="text-input" id="password-environment" aria-label="密码簿浏览器环境"></select>
+                  </label>
+                  <label class="search-field">
+                    <span class="sr-only">搜索密码记录</span>
+                    <svg class="svg-icon" aria-hidden="true"><use href="#icon-search"></use></svg>
+                    <input id="password-search" type="search" placeholder="搜索服务或账号" autocomplete="off" />
+                  </label>
+                  <button class="button button--primary" type="button" data-action="new-password-entry"><svg class="svg-icon" aria-hidden="true"><use href="#icon-plus"></use></svg> 添加记录</button>
+                </div>
+              </div>
+              <div class="password-entry-list" id="password-entries"></div>
+              <div class="empty-state" id="password-entries-empty">
+                <span class="empty-icon" aria-hidden="true"><svg class="svg-icon"><use href="#icon-key"></use></svg></span>
+                <strong>没有密码记录</strong>
+                <button class="button button--secondary" type="button" data-action="new-password-entry">添加记录</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="view" data-view="agent" aria-label="Agent 配置" hidden>
+            <div class="agent-page-layout">
+              <div class="agent-page-sidebar">
+                <section class="panel agent-scope-panel" aria-labelledby="agent-scope-heading">
+                  <div class="panel-heading">
+                    <div><p class="eyebrow">连接状态</p><h3 id="agent-scope-heading">Agent 概要</h3></div>
+                  </div>
+                  <div id="agent-management-card"></div>
+                </section>
+                <section class="panel agent-environment-panel" aria-labelledby="agent-environment-heading">
+                  <div class="panel-heading">
+                    <div><p class="eyebrow">作用范围</p><h3 id="agent-environment-heading">环境管理</h3></div>
+                    <span class="agent-environment-summary" id="agent-environment-summary"></span>
+                  </div>
+                  <div id="agent-environment-list"></div>
+                </section>
+              </div>
+              <section class="panel agent-config-panel" aria-labelledby="agent-config-heading">
+                <div class="panel-heading agent-config-heading">
+                  <div><p class="eyebrow">连接与模型</p><h3 id="agent-config-heading">连接配置</h3></div>
+                  <span id="agent-connection-status" class="agent-connection-status" role="status"></span>
+                </div>
+                <form id="agent-form">
+                  <input id="agent-profile-id" type="hidden" />
+                  <p class="agent-form-scope" id="agent-form-scope"></p>
+                  <div class="field-divider"><span>Agent 接入</span></div>
+                  <div class="agent-form-grid agent-form-grid--connection">
+                    <div class="agent-field"><label class="field-label" for="manager-agent-protocol">接口协议</label><select class="text-input" id="manager-agent-protocol" name="agentProtocol"></select></div>
+                    <div class="agent-field"><label class="field-label" for="manager-agent-base-url">接口地址</label><input class="text-input" id="manager-agent-base-url" name="agentBaseUrl" type="url" maxlength="2048" placeholder="https://api.example.com/v1" autocomplete="off" /></div>
+                    <div class="agent-field"><label class="field-label" for="manager-agent-model">Agent 模型</label><div class="agent-model-input-row"><input class="text-input" id="manager-agent-model" name="agentModel" type="text" maxlength="256" list="manager-agent-model-options" placeholder="点击获取模型列表" autocomplete="off" /><button id="manager-agent-model-refresh" class="icon-button" type="button" title="刷新模型列表" aria-label="刷新模型列表"><svg class="svg-icon"><use href="#icon-refresh"></use></svg></button></div><datalist id="manager-agent-model-options"></datalist><p id="manager-agent-model-status" class="field-hint agent-model-status" aria-live="polite"></p></div>
+                    <div class="agent-field"><label class="field-label" for="manager-agent-token">Agent Token <span class="optional">留空保持当前值</span></label><input class="text-input" id="manager-agent-token" name="agentToken" type="password" maxlength="4096" autocomplete="new-password" /><div class="agent-form-token-row"><span id="manager-agent-token-status">未保存 Token</span><button id="manager-agent-token-clear" class="panel-link" type="button" hidden>清除 Token</button></div></div>
+                  </div>
+                  <details class="agent-manager-advanced"><summary>高级参数</summary><div class="agent-form-grid agent-form-grid--advanced">
+                    <div class="agent-field"><label class="field-label" for="manager-agent-context">上下文预算（tokens）</label><input class="text-input" id="manager-agent-context" name="agentContextBudgetTokens" type="number" min="1" step="1000" /></div>
+                    <div class="agent-field"><label class="field-label" for="manager-agent-output">单次回复上限（tokens）</label><input class="text-input" id="manager-agent-output" name="agentMaxOutputTokens" type="number" min="1" step="256" /></div>
+                    <div class="agent-field"><label class="field-label" for="manager-agent-reasoning">思考等级</label><select class="text-input" id="manager-agent-reasoning" name="agentReasoningEffort"></select></div>
+                    <div class="agent-field"><label class="field-label" for="manager-agent-temperature">温度</label><input class="text-input" id="manager-agent-temperature" name="agentTemperature" type="number" min="0" max="2" step="0.1" /></div>
+                    <div class="agent-field"><label class="field-label" for="manager-agent-steps">单轮最多工具步数</label><input class="text-input" id="manager-agent-steps" name="agentMaxSteps" type="number" min="0" step="1" /></div>
+                  </div></details>
+                  <div class="field-divider"><span>JEV 判断模型</span></div>
+                  <div class="agent-form-grid agent-form-grid--jev">
+                    <div class="agent-field"><label class="field-label" for="manager-jev-provider">JEV 来源</label><select class="text-input" id="manager-jev-provider" name="jevProvider"></select></div>
+                    <div class="agent-field"><label class="field-label" for="manager-jev-base-url">JEV 接口地址</label><input class="text-input" id="manager-jev-base-url" name="jevBaseUrl" type="url" maxlength="2048" placeholder="https://api.typesafe.ai" autocomplete="off" /></div>
+                    <div class="agent-field"><label class="field-label" for="manager-jev-model">JEV 模型</label><input class="text-input" id="manager-jev-model" name="jevModel" type="text" maxlength="256" placeholder="jev-latest" autocomplete="off" /></div>
+                    <div class="agent-field"><label class="field-label" for="manager-jev-token">JEV Key <span class="optional">官方 TypeSafe 或自定义兼容端点</span></label><input class="text-input" id="manager-jev-token" name="jevToken" type="password" maxlength="4096" autocomplete="new-password" /><div class="agent-form-token-row"><span id="manager-jev-token-status">未保存 Key</span><button id="manager-jev-token-clear" class="panel-link" type="button" hidden>清除 Key</button></div></div>
+                  </div>
+                  <div class="modal-actions agent-form-actions"><button id="test-agent-connection" class="icon-button" type="button" title="测试连通性" aria-label="测试连通性"><svg class="svg-icon"><use href="#icon-zap"></use></svg></button><span class="agent-action-spacer"></span><button class="button button--primary" type="submit">保存配置</button></div>
+                </form>
+              </section>
+            </div>
+          </section>
+
+          <section class="view" data-view="settings" aria-label="设置" hidden>
+            <div class="settings-layout">
+              <section class="panel settings-panel" aria-labelledby="engine-heading">
+                <div class="panel-heading">
+                  <div><p class="eyebrow">浏览器引擎</p><h3 id="engine-heading">Chromium 可执行文件</h3></div>
+                </div>
+                <div class="engine-mode-status" id="engine-mode-status" role="status">当前模式：内置 Electron Chromium</div>
+                <div class="input-with-button">
+                  <label class="sr-only" for="engine-path">Chromium 可执行文件路径</label>
+                  <input id="engine-path" type="text" placeholder="使用 Electron 内置 Chromium" autocomplete="off" />
+                  <button class="button button--secondary" id="choose-engine" type="button">选择文件</button>
+                  <button class="button button--secondary" id="install-browser" type="button">更新内核</button>
+                </div>
+                <p class="field-hint engine-mode-hint" id="engine-update-status" hidden></p>
+                <div class="settings-actions"><button class="button button--primary" id="save-settings" type="button">保存设置</button></div>
+              </section>
+              <section class="panel settings-panel" aria-labelledby="core-heading">
+                <div class="panel-heading"><div><p class="eyebrow">代理核心</p><h3 id="core-heading">双核心运行时 <span class="status-badge status-badge--ready" id="core-status">检查中</span></h3></div></div>
+                <label class="field-label" for="default-core-settings">新导入节点默认核心</label>
+                <select class="text-input" id="default-core-settings"><option value="xray">Xray-core</option><option value="singbox">sing-box</option></select>
+                <div class="core-field-heading"><label class="field-label" for="xray-path">Xray-core 路径</label><span class="core-version" id="xray-version">当前版本：检测中</span></div>
+                <div class="input-with-button"><input id="xray-path" type="text" placeholder="优先使用 vendor/cores 内置版本" autocomplete="off" /><button class="button button--secondary" id="choose-xray" type="button">选择</button><button class="button button--secondary" id="install-xray" type="button">立即更新</button></div>
+                <div class="core-field-heading"><label class="field-label" for="singbox-path">sing-box 路径</label><span class="core-version" id="singbox-version">当前版本：检测中</span></div>
+                <div class="input-with-button"><input id="singbox-path" type="text" placeholder="优先使用 vendor/cores 内置版本" autocomplete="off" /><button class="button button--secondary" id="choose-singbox" type="button">选择</button><button class="button button--secondary" id="install-singbox" type="button">立即更新</button></div>
+              </section>
+              <section class="panel theme-panel" aria-labelledby="theme-heading">
+                <div class="panel-heading theme-panel-heading">
+                  <div><p class="eyebrow">外观与主题</p><h3 id="theme-heading">主题配置</h3></div>
+                  <span class="theme-status" id="theme-background-name">未上传背景图片</span>
+                </div>
+                <div class="theme-preview" id="theme-preview" aria-hidden="true">
+                  <div class="theme-preview-top"><span class="theme-preview-dot"></span><span class="theme-preview-dot theme-preview-dot--muted"></span><span class="theme-preview-line"></span></div>
+                  <div class="theme-preview-grid"><div class="theme-preview-card"><span></span><strong></strong><i></i></div><div class="theme-preview-card theme-preview-card--accent"><span></span><strong></strong><i></i></div><div class="theme-preview-card theme-preview-card--secondary"><span></span><strong></strong><i></i></div></div>
+                </div>
+                <div class="theme-toolbar">
+                  <label class="theme-select-field"><span class="field-label">主题预设</span><select class="text-input" id="theme-preset"><option value="midnight">深海蓝 · 参考主题</option><option value="ocean">青花海 · 高亮主题</option><option value="ink">墨蓝灰 · 克制主题</option><option value="custom">自定义</option></select></label>
+                  <div class="theme-upload"><span class="field-label">自定义背景</span><div class="theme-upload-actions"><input id="theme-background-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" hidden /><button class="button button--secondary" id="theme-upload-button" type="button"><svg class="svg-icon" aria-hidden="true"><use href="#icon-upload"></use></svg> 上传图片</button><button class="button button--secondary" id="theme-clear-background" type="button"><svg class="svg-icon" aria-hidden="true"><use href="#icon-close"></use></svg> 清除</button></div></div>
+                </div>
+                <div class="theme-color-grid">
+                  <label class="theme-color-field" for="theme-background"><span>页面背景</span><input id="theme-background" type="color" /></label>
+                  <label class="theme-color-field" for="theme-surface"><span>面板底色</span><input id="theme-surface" type="color" /></label>
+                  <label class="theme-color-field" for="theme-surface-soft"><span>浮层底色</span><input id="theme-surface-soft" type="color" /></label>
+                  <label class="theme-color-field" for="theme-primary"><span>主色</span><input id="theme-primary" type="color" /></label>
+                  <label class="theme-color-field" for="theme-primary-hover"><span>主色高亮</span><input id="theme-primary-hover" type="color" /></label>
+                  <label class="theme-color-field" for="theme-secondary"><span>辅助色</span><input id="theme-secondary" type="color" /></label>
+                  <label class="theme-color-field" for="theme-success"><span>成功色</span><input id="theme-success" type="color" /></label>
+                  <label class="theme-color-field" for="theme-warning"><span>警示色</span><input id="theme-warning" type="color" /></label>
+                  <label class="theme-color-field" for="theme-danger"><span>错误色</span><input id="theme-danger" type="color" /></label>
+                  <label class="theme-color-field" for="theme-text"><span>正文色</span><input id="theme-text" type="color" /></label>
+                  <label class="theme-color-field" for="theme-text-muted"><span>说明色</span><input id="theme-text-muted" type="color" /></label>
+                  <label class="theme-color-field" for="theme-text-faint"><span>弱化色</span><input id="theme-text-faint" type="color" /></label>
+                </div>
+                <div class="theme-range-grid">
+                  <label class="theme-range-field" for="theme-background-opacity"><span>背景图片透明度 <output id="theme-opacity-value">72%</output></span><input id="theme-background-opacity" type="range" min="0" max="1" step="0.01" /></label>
+                  <label class="theme-range-field" for="theme-blur"><span>玻璃模糊 <output id="theme-blur-value">18px</output></span><input id="theme-blur" type="range" min="0" max="40" step="1" /></label>
+                  <label class="theme-range-field" for="theme-radius"><span>圆角 <output id="theme-radius-value">12px</output></span><input id="theme-radius" type="range" min="4" max="24" step="1" /></label>
+                </div>
+                <p class="field-hint">颜色与背景会实时预览，点击保存后跨重启生效。图片仅保存在本机状态文件中，建议使用 5 MB 以内的图片。</p>
+                <div class="settings-actions theme-actions"><button class="button button--secondary" id="theme-reset" type="button">恢复参考主题</button><button class="button button--primary" id="save-theme" type="button"><svg class="svg-icon" aria-hidden="true"><use href="#icon-check"></use></svg> 保存主题</button></div>
+              </section>
+            </div>
+          </section>
+        </main>
+      </div>
+      <div class="connection-float" aria-live="polite">
+        <button class="launcher-link" type="button" data-view-target="launchpad" title="打开环境启动器" aria-label="打开环境启动器"><svg class="svg-icon"><use href="#icon-grid"></use></svg><span>启动器</span></button>
+        <span class="sync-state" id="sync-state">已连接</span>
+        <button class="icon-button" id="refresh-state" type="button" title="刷新数据" aria-label="刷新数据"><svg class="svg-icon"><use href="#icon-refresh"></use></svg></button>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="profile-modal" hidden>
+      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="profile-modal-title">
+        <div class="modal-header"><div><p class="eyebrow">环境配置</p><h2 id="profile-modal-title">新建环境</h2></div><button class="icon-button" type="button" data-close-modal="profile-modal" title="关闭" aria-label="关闭"><svg class="svg-icon"><use href="#icon-close"></use></svg></button></div>
+        <form id="profile-form">
+          <input id="profile-id" type="hidden" />
+          <label class="field-label" for="profile-name">名称 <span class="required">必填</span></label>
+          <input class="text-input" id="profile-name" name="name" type="text" maxlength="80" required placeholder="例如：工作测试" />
+          <label class="field-label" for="profile-homepage">启动网址</label>
+          <input class="text-input" id="profile-homepage" name="homepage" type="url" maxlength="2048" placeholder="https://example.com" />
+          <label class="field-label" for="profile-node">连接方式</label>
+          <div class="profile-config-field" data-profile-lock-field>
+            <select class="text-input" id="profile-node" name="nodeId"></select>
+            <button class="profile-config-lock-target" type="button" data-action="profile-config-locked" title="点击查看为什么无法修改" aria-label="连接方式需要先停止环境才能修改" hidden><svg class="svg-icon" aria-hidden="true"><use href="#icon-lock"></use></svg></button>
+          </div>
+          <label class="field-label" for="profile-test-identity">授权测试身份 <span class="optional">仅内置 Electron</span></label>
+          <input class="text-input" id="profile-test-identity" type="text" readonly value="保存后生成" />
+          <label class="field-label" for="profile-test-origins">授权测试站点来源 <span class="optional">可选</span></label>
+          <div class="profile-config-field" data-profile-lock-field>
+            <textarea class="text-input textarea" id="profile-test-origins" name="testIdentityOrigins" rows="2" maxlength="2000" placeholder="https://test.example.com&#10;http://localhost:3000"></textarea>
+            <button class="profile-config-lock-target" type="button" data-action="profile-config-locked" title="点击查看为什么无法修改" aria-label="授权测试站点来源需要先停止环境才能修改" hidden><svg class="svg-icon" aria-hidden="true"><use href="#icon-lock"></use></svg></button>
+          </div>
+          <label class="field-label" for="profile-notes">备注</label>
+          <div class="profile-config-field" data-profile-lock-field>
+            <textarea class="text-input textarea" id="profile-notes" name="notes" maxlength="500" rows="3" placeholder="可选"></textarea>
+            <button class="profile-config-lock-target" type="button" data-action="profile-config-locked" title="点击查看为什么无法修改" aria-label="备注需要先停止环境才能修改" hidden><svg class="svg-icon" aria-hidden="true"><use href="#icon-lock"></use></svg></button>
+          </div>
+          <div class="modal-actions"><button class="button button--secondary" type="button" data-close-modal="profile-modal">取消</button><button class="button button--primary" type="submit">保存环境</button></div>
+        </form>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="import-modal" hidden>
+      <section class="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="import-modal-title">
+        <div class="modal-header"><div><p class="eyebrow">连接节点</p><h2 id="import-modal-title">导入订阅</h2></div><button class="icon-button" type="button" data-close-modal="import-modal" title="关闭" aria-label="关闭"><svg class="svg-icon"><use href="#icon-close"></use></svg></button></div>
+        <form id="import-form">
+          <input id="subscription-id" name="subscriptionId" type="hidden" />
+          <label class="field-label" for="subscription-name">订阅名称 <span class="optional">可选</span></label>
+          <input class="text-input" id="subscription-name" name="name" type="text" maxlength="120" placeholder="留空则使用订阅链接的域名" autocomplete="off" />
+          <label class="field-label" for="subscription-sort-order">排序号 <span class="required">必填</span></label>
+          <input class="text-input" id="subscription-sort-order" name="sortOrder" type="number" min="0" step="1" required value="0" inputmode="numeric" />
+          <label class="field-label" for="subscription-url">订阅地址 <span class="optional">可选</span></label>
+          <input class="text-input" id="subscription-url" name="url" type="url" maxlength="4096" placeholder="https://example.com/subscription" />
+          <div class="field-divider"><span>或粘贴订阅内容</span></div>
+          <label class="sr-only" for="subscription-text">订阅内容</label>
+          <textarea class="text-input textarea textarea--code" id="subscription-text" name="text" rows="7" placeholder="支持 base64 URI 列表或 Clash proxies YAML"></textarea>
+          <div class="modal-actions"><button class="button button--secondary" type="button" data-close-modal="import-modal">取消</button><button class="button button--primary" type="submit">开始导入</button></div>
+        </form>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="node-modal" hidden>
+      <section class="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="node-modal-title">
+        <div class="modal-header"><div><p class="eyebrow">连接节点</p><h2 id="node-modal-title">添加节点</h2></div><button class="icon-button" type="button" data-close-modal="node-modal" title="关闭" aria-label="关闭"><svg class="svg-icon"><use href="#icon-close"></use></svg></button></div>
+        <form id="node-form">
+          <input id="node-id" type="hidden" />
+          <label class="field-label" for="node-name">名称 <span class="optional">可选</span></label>
+          <input class="text-input" id="node-name" name="name" type="text" maxlength="120" placeholder="例如：办公室出口" autocomplete="off" />
+          <label class="field-label" for="node-protocol">协议 <span class="required">必填</span></label>
+          <select class="text-input" id="node-protocol" name="protocol" required>
+            <option value="http">HTTP</option>
+            <option value="https">HTTPS</option>
+            <option value="socks5">SOCKS5</option>
+          </select>
+          <label class="field-label" for="node-host">服务器地址或 IP <span class="required">必填</span></label>
+          <input class="text-input" id="node-host" name="host" type="text" maxlength="253" required placeholder="例如：127.0.0.1 或 proxy.example.com" autocomplete="off" />
+          <label class="field-label" for="node-port">端口 <span class="required">必填</span></label>
+          <input class="text-input" id="node-port" name="port" type="number" min="1" max="65535" step="1" required placeholder="例如：8080" inputmode="numeric" />
+          <label class="field-label" for="node-username">用户名 <span class="optional">可选</span></label>
+          <input class="text-input" id="node-username" name="username" type="text" maxlength="256" autocomplete="username" />
+          <label class="field-label" for="node-password">密码 <span class="optional">可选</span></label>
+          <input class="text-input" id="node-password" name="password" type="text" maxlength="1024" autocomplete="off" />
+          <div class="field-divider"><span>传输选项</span></div>
+          <label class="checkbox-field" id="node-tls-field"><input id="node-tls" name="tls" type="checkbox" /> <span>使用 TLS（HTTPS 代理）</span></label>
+          <label class="field-label" id="node-sni-label" for="node-sni">SNI / 服务器名称 <span class="optional">可选</span></label>
+          <input class="text-input" id="node-sni" name="sni" type="text" maxlength="253" placeholder="留空则使用服务器地址" autocomplete="off" />
+          <label class="checkbox-field" id="node-remote-dns-field"><input id="node-remote-dns" name="remoteDns" type="checkbox" /> <span>通过 SOCKS5 代理解析 DNS（remote DNS）</span></label>
+          <div class="modal-actions"><button class="button button--secondary" type="button" data-close-modal="node-modal">取消</button><button class="button button--primary" type="submit">保存节点</button></div>
+        </form>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="node-details-modal" hidden>
+      <section class="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="node-details-title">
+        <div class="modal-header"><div><p class="eyebrow">连接节点</p><h2 id="node-details-title">节点信息</h2></div><button class="icon-button" type="button" data-close-modal="node-details-modal" title="关闭" aria-label="关闭"><svg class="svg-icon"><use href="#icon-close"></use></svg></button></div>
+        <div id="node-details-content" class="node-details-content"></div>
+        <div class="modal-actions"><button id="node-details-edit" class="button button--primary" type="button" data-action="edit-node">编辑节点</button><button class="button button--secondary" type="button" data-close-modal="node-details-modal">关闭</button></div>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="extension-modal" hidden>
+      <section class="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="extension-modal-title">
+        <div class="modal-header"><div><p class="eyebrow">本地扩展</p><h2 id="extension-modal-title">导入插件</h2></div><button class="icon-button" type="button" data-close-modal="extension-modal" title="关闭" aria-label="关闭"><svg class="svg-icon"><use href="#icon-close"></use></svg></button></div>
+        <form id="extension-form">
+          <input id="extension-id" type="hidden" />
+          <label class="field-label" for="extension-path">插件来源 <span class="required">必填</span></label>
+          <div class="input-with-button"><input class="text-input" id="extension-path" name="path" type="text" readonly required placeholder="选择 ZIP 或 CRX 文件，或直接加载未打包文件夹" /><button class="button button--secondary" id="choose-extension" type="button"><svg class="svg-icon" aria-hidden="true"><use href="#icon-folder"></use></svg> 选择 ZIP / CRX</button></div>
+          <div class="extension-source-actions"><button class="button button--secondary" id="choose-unpacked-extension" type="button"><svg class="svg-icon" aria-hidden="true"><use href="#icon-folder"></use></svg> 加载未打包文件夹</button></div>
+          <div class="extension-preview" id="extension-preview" hidden></div>
+          <div class="field-divider"><span>激活环境</span></div>
+          <div class="extension-profile-options" id="extension-profile-options"></div>
+          <p class="field-hint" id="extension-profile-empty" hidden>还没有浏览器环境</p>
+          <div class="modal-actions"><button class="button button--secondary" type="button" data-close-modal="extension-modal">取消</button><button class="button button--primary" type="submit">安装并保存</button></div>
+        </form>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="extension-store-modal" hidden>
+      <section class="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="extension-store-modal-title">
+        <div class="modal-header"><div><p class="eyebrow">Chrome Web Store</p><h2 id="extension-store-modal-title">从商店安装插件</h2></div><button class="icon-button" type="button" data-close-modal="extension-store-modal" title="关闭" aria-label="关闭"><svg class="svg-icon"><use href="#icon-close"></use></svg></button></div>
+        <form id="extension-store-form">
+          <label class="field-label" for="extension-store-source">商店地址或扩展 ID <span class="required">必填</span></label>
+          <input class="text-input" id="extension-store-source" name="source" type="text" maxlength="2048" required placeholder="粘贴 Chrome Web Store 详情页地址或 32 位扩展 ID" autocomplete="off" />
+          <p class="field-hint">仅支持公开 Chrome Web Store 扩展；下载和校验在本地完成。</p>
+          <div class="field-label">商店请求节点</div>
+          <div class="store-node-picker" data-store-node-picker="install">
+            <button class="connection-picker-trigger store-install-route-select" id="extension-store-install-proxy-node" type="button" data-extension-store-proxy-node aria-haspopup="listbox" aria-expanded="false" aria-controls="extension-store-install-proxy-node-options">
+              <span class="connection-picker-trigger-copy"><span class="connection-picker-trigger-name" data-store-node-label>系统直连</span><span class="connection-picker-trigger-meta" data-store-node-meta>系统默认网络路径</span></span><svg class="svg-icon connection-picker-chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg>
+            </button>
+            <div class="store-node-picker-popover connection-picker-popover" id="extension-store-install-proxy-node-options" data-store-node-popover="install" role="dialog" aria-label="选择商店请求节点" hidden></div>
+          </div>
+          <div class="field-divider"><span>激活环境</span></div>
+          <div class="extension-profile-options" id="extension-store-profile-options"></div>
+          <p class="field-hint" id="extension-store-profile-empty" hidden>还没有浏览器环境</p>
+          <div class="modal-actions"><button class="button button--secondary" type="button" data-close-modal="extension-store-modal">取消</button><button class="button button--primary" type="submit"><svg class="svg-icon" aria-hidden="true"><use href="#icon-download"></use></svg> 下载并安装</button></div>
+        </form>
+      </section>
+    </div>
+
+    <div class="modal-backdrop extension-store-backdrop" id="extension-discovery-modal" hidden>
+      <section class="modal extension-store-browser" role="dialog" aria-modal="true" aria-labelledby="extension-discovery-modal-title">
+        <header class="store-browser-header">
+          <div class="store-browser-brand">
+            <span class="store-browser-brand-mark" aria-hidden="true"><svg class="svg-icon"><use href="#icon-puzzle"></use></svg></span>
+            <div><p class="eyebrow" id="extension-discovery-source-label">Chrome 扩展来源</p><h2 id="extension-discovery-modal-title">插件商店</h2></div>
+          </div>
+          <div class="store-browser-header-tools">
+            <div class="store-request-route"><span>商店请求节点</span>
+              <div class="store-node-picker" data-store-node-picker="discovery">
+                <button class="connection-picker-trigger store-request-route-select" id="extension-store-proxy-node" type="button" data-extension-store-proxy-node aria-haspopup="listbox" aria-expanded="false" aria-controls="extension-store-proxy-node-options">
+                  <span class="connection-picker-trigger-copy"><span class="connection-picker-trigger-name" data-store-node-label>系统直连</span><span class="connection-picker-trigger-meta" data-store-node-meta>系统默认网络路径</span></span><svg class="svg-icon connection-picker-chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg>
+                </button>
+                <div class="store-node-picker-popover connection-picker-popover" id="extension-store-proxy-node-options" data-store-node-popover="discovery" role="dialog" aria-label="选择商店请求节点" hidden></div>
+              </div>
+            </div>
+            <button class="icon-button" type="button" data-close-modal="extension-discovery-modal" title="关闭" aria-label="关闭"><svg class="svg-icon"><use href="#icon-close"></use></svg></button>
+          </div>
+        </header>
+        <nav class="store-platform-tabs" aria-label="插件来源平台" role="tablist">
+          <button class="store-platform-tab is-active" type="button" role="tab" aria-selected="true" data-action="select-extension-store-source" data-id="crxsoso" data-extension-store-source="crxsoso"><span class="store-platform-mark store-platform-mark--chrome">C</span> CRX Soso</button>
+          <button class="store-platform-tab" type="button" role="tab" aria-selected="false" data-action="select-extension-store-source" data-id="official" data-extension-store-source="official"><span class="store-platform-mark store-platform-mark--chrome">C</span> 官方 Chrome Web Store</button>
+          <button class="store-platform-tab" type="button" role="tab" aria-selected="false" disabled title="暂未接入 Edge 商店"><span class="store-platform-mark store-platform-mark--edge">E</span> Edge</button>
+          <button class="store-platform-tab" type="button" role="tab" aria-selected="false" disabled title="暂未接入 Firefox 商店"><span class="store-platform-mark store-platform-mark--firefox">F</span> Firefox</button>
+          <button class="store-platform-tab" type="button" role="tab" aria-selected="false" disabled title="暂未接入 Microsoft Store"><span class="store-platform-mark store-platform-mark--microsoft">M</span> Microsoft</button>
+        </nav>
+        <div class="store-browser-layout">
+          <aside class="store-sidebar" aria-label="插件筛选">
+            <div class="store-sidebar-search">
+              <label class="store-search-label" for="extension-store-search">搜索</label>
+              <div class="store-search-control"><svg class="svg-icon" aria-hidden="true"><use href="#icon-search"></use></svg><input id="extension-store-search" type="search" placeholder="搜索 Chrome 店内应用" autocomplete="off" maxlength="160" /><button class="store-search-submit" id="extension-store-search-button" type="button" title="搜索" aria-label="搜索"><svg class="svg-icon"><use href="#icon-arrow-right"></use></svg></button></div>
+            </div>
+            <div class="store-filter-block">
+              <h3>筛选</h3>
+              <button class="store-select-filter" type="button"><span>扩展程序</span><svg class="svg-icon" aria-hidden="true"><use href="#icon-chevron"></use></svg></button>
+            </div>
+            <div class="store-filter-block store-category-block">
+              <h3>类别</h3>
+              <div class="store-category-list" role="listbox" aria-label="插件类别">
+                <button type="button" class="store-category-option is-active" data-action="search-extension-store-category" data-id="无障碍" aria-selected="true">无障碍</button>
+                <button type="button" class="store-category-option" data-action="search-extension-store-category" data-id="工具" aria-selected="false">工具</button>
+                <button type="button" class="store-category-option" data-action="search-extension-store-category" data-id="工作流程与规划" aria-selected="false">工作流程与规划</button>
+                <button type="button" class="store-category-option" data-action="search-extension-store-category" data-id="沟通" aria-selected="false">沟通</button>
+                <button type="button" class="store-category-option" data-action="search-extension-store-category" data-id="教育" aria-selected="false">教育</button>
+                <button type="button" class="store-category-option" data-action="search-extension-store-category" data-id="开发者工具" aria-selected="false">开发者工具</button>
+                <button type="button" class="store-category-option" data-action="search-extension-store-category" data-id="购物" aria-selected="false">购物</button>
+                <button type="button" class="store-category-option" data-action="search-extension-store-category" data-id="健康" aria-selected="false">健康</button>
+                <button type="button" class="store-category-option" data-action="search-extension-store-category" data-id="旅游" aria-selected="false">旅游</button>
+                <button type="button" class="store-category-option" data-action="search-extension-store-category" data-id="社交" aria-selected="false">社交</button>
+                <button type="button" class="store-category-option" data-action="search-extension-store-category" data-id="新闻与天气" aria-selected="false">新闻与天气</button>
+                <button type="button" class="store-category-option" data-action="search-extension-store-category" data-id="艺术与设计" aria-selected="false">艺术与设计</button>
+                <button type="button" class="store-category-option" data-action="search-extension-store-category" data-id="游戏" aria-selected="false">游戏</button>
+              </div>
+            </div>
+            <p class="store-sidebar-note" id="extension-store-source-note">来源结果会在本地重新校验扩展身份和清单。</p>
+          </aside>
+          <main class="store-browser-main">
+            <div class="store-browser-heading">
+              <div><p class="eyebrow">Chrome 扩展</p><h3 id="extension-store-heading">无障碍 <span id="extension-store-count">0</span></h3><p class="field-hint" id="extension-store-status">正在准备插件列表…</p></div>
+              <div class="store-view-toggle" role="group" aria-label="结果视图">
+                <button type="button" data-action="toggle-extension-store-view" data-id="list" title="列表视图" aria-label="列表视图"><svg class="svg-icon"><use href="#icon-list"></use></svg></button>
+                <button type="button" class="is-active" data-action="toggle-extension-store-view" data-id="grid" title="网格视图" aria-label="网格视图"><svg class="svg-icon"><use href="#icon-grid"></use></svg></button>
+              </div>
+            </div>
+            <div class="extension-store-results store-results-grid" id="extension-store-results"></div>
+            <div class="extension-store-detail" id="extension-store-detail" hidden></div>
+          </main>
+        </div>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="password-entry-modal" hidden>
+      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="password-entry-modal-title">
+        <div class="modal-header"><div><p class="eyebrow">本地账号记录</p><h2 id="password-entry-modal-title">添加记录</h2></div><button class="icon-button" type="button" data-close-modal="password-entry-modal" title="关闭" aria-label="关闭"><svg class="svg-icon"><use href="#icon-close"></use></svg></button></div>
+        <form id="password-entry-form">
+          <input id="password-entry-id" type="hidden" />
+          <input id="password-entry-profile-id" type="hidden" />
+          <div class="field-label">所属环境</div>
+          <div class="password-entry-owner" id="password-entry-profile-name"></div>
+          <label class="field-label" for="password-entry-service">服务名称 <span class="required">必填</span></label>
+          <input class="text-input" id="password-entry-service" name="service" type="text" maxlength="120" required autocomplete="off" />
+          <label class="field-label" for="password-entry-account">账号 <span class="required">必填</span></label>
+          <input class="text-input" id="password-entry-account" name="account" type="text" maxlength="256" required autocomplete="username" />
+          <label class="field-label" for="password-entry-website">登录地址 <span class="optional">可选</span></label>
+          <input class="text-input" id="password-entry-website" name="website" type="url" maxlength="2048" placeholder="https://example.com" autocomplete="url" />
+          <label class="field-label" for="password-entry-password">密码 <span class="required" id="password-entry-password-required">必填</span></label>
+          <input class="text-input" id="password-entry-password" name="password" type="password" maxlength="4096" required autocomplete="new-password" />
+          <label class="field-label" for="password-entry-notes">备注 <span class="optional">可选</span></label>
+          <textarea class="text-input textarea" id="password-entry-notes" name="notes" rows="3" maxlength="1000"></textarea>
+          <div class="modal-actions"><button class="button button--secondary" type="button" data-close-modal="password-entry-modal">取消</button><button class="button button--primary" type="submit">保存记录</button></div>
+        </form>
+      </section>
+    </div>
+
+    <div class="modal-backdrop confirm-modal-backdrop" id="confirm-modal" hidden>
+      <section class="modal modal--confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirm-modal-title" aria-describedby="confirm-modal-message">
+        <div class="confirm-modal-heading">
+          <span class="confirm-modal-icon" id="confirm-modal-icon" aria-hidden="true"><svg class="svg-icon"><use href="#icon-info"></use></svg></span>
+          <div class="confirm-modal-heading-copy">
+            <p class="eyebrow" id="confirm-modal-eyebrow">确认操作</p>
+            <h2 id="confirm-modal-title">确认操作</h2>
+          </div>
+          <button class="icon-button" type="button" data-confirm-result="cancel" title="关闭" aria-label="关闭"><svg class="svg-icon"><use href="#icon-close"></use></svg></button>
+        </div>
+        <div class="confirm-modal-body">
+          <p class="confirm-modal-message" id="confirm-modal-message"></p>
+          <p class="confirm-modal-detail" id="confirm-modal-detail" hidden></p>
+        </div>
+        <div class="modal-actions confirm-modal-actions">
+          <button class="button button--secondary" id="confirm-modal-cancel" type="button" data-confirm-result="cancel">取消</button>
+          <button class="button button--primary" id="confirm-modal-submit" type="button" data-confirm-result="confirm">确定</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="zoom-indicator" id="zoom-indicator" role="status" aria-live="polite" hidden></div>
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+    <script src="./interface-zoom.js"></script>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

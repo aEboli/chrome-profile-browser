@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Chromium Workbench brand icon</title>
+  <desc id="desc">Minimal fingerprint with a star, moon, and sun</desc>
+  <defs>
+    <linearGradient id="brand-background" x1="18" y1="12" x2="112" y2="118" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#294f79" />
+      <stop offset="1" stop-color="#16263d" />
+    </linearGradient>
+    <linearGradient id="fingerprint-stroke" x1="33" y1="38" x2="93" y2="108" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff" />
+      <stop offset="1" stop-color="#b9d8ff" />
+    </linearGradient>
+  </defs>
+  <rect x="3" y="3" width="122" height="122" rx="30" fill="url(#brand-background)" stroke="#79b3ff" stroke-opacity=".34" stroke-width="2" />
+
+  <g id="moon">
+    <path d="M96 15a17 17 0 1 0 12 30A18 18 0 1 1 96 15Z" fill="#d9e7ff" />
+  </g>
+  <g id="star">
+    <path d="m29 17 3.5 8.2 8.5.8-6.4 5.6 1.9 8.4-7.5-4.4-7.5 4.4 1.9-8.4-6.4-5.6 8.5-.8Z" fill="#ffd66e" />
+  </g>
+
+  <g id="sun" fill="none" stroke="#ffc95f" stroke-linecap="round" stroke-width="2.6">
+    <circle cx="99" cy="101" r="7.5" fill="#ffc95f" stroke="none" />
+    <path d="M99 88v-4M99 118v-4M86 101h-4M116 101h-4M90 92l-3-3M111 113l-3-3M108 92l3-3M87 113l3-3" />
+  </g>
+
+  <g id="fingerprint" fill="none" stroke="url(#fingerprint-stroke)" stroke-linecap="round" stroke-width="4">
+    <path d="M64 42c-19 0-34 15-34 34 0 14 6 27 17 37" />
+    <path d="M64 49c-14 0-25 11-25 26 0 15 7 28 19 38" />
+    <path d="M64 57c-9 0-16 7-16 17 0 12 6 23 16 31" />
+    <path d="M64 65c-4 0-7 4-7 9 0 12 5 20 11 27" />
+    <path d="M64 42c19 0 34 15 34 34 0 8-2 16-6 23" />
+    <path d="M64 49c14 0 25 11 25 26 0 7-2 14-5 20" />
+    <path d="M64 57c9 0 16 7 16 17 0 6-2 12-5 17" />
+    <path d="M64 65c4 0 7 4 7 9 0 5-1 9-3 13" />
+  </g>
+</svg>

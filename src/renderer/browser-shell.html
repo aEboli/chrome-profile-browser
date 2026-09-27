@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' https: http: data:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: http: data:;"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>简约指纹</title>
+    <link rel="stylesheet" href="browser-shell.css" />
+    <link rel="icon" type="image/svg+xml" href="../assets/brand-icon-light.svg" media="(prefers-color-scheme: light)" />
+    <link rel="icon" type="image/svg+xml" href="../assets/brand-icon.svg" media="(prefers-color-scheme: dark)" />
+  </head>
+  <body>
+    <svg class="shell-svg-sprite" aria-hidden="true" focusable="false">
+      <symbol id="shell-icon-back" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
+      <symbol id="shell-icon-forward" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+      <symbol id="shell-icon-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.7-4L3 10"/><path d="M3 5v5h5M4 13a8 8 0 0 0 14.7 4L21 14"/><path d="M21 19v-5h-5"/></symbol>
+      <symbol id="shell-icon-ai" viewBox="0 0 24 24"><path d="M3.5 19 9 5h2l5.5 14M5.5 14h9M18.5 5h2M18.5 19h2M19.5 5v14"/></symbol>
+      <symbol id="shell-icon-camera" viewBox="0 0 24 24"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+      <symbol id="shell-icon-mouse" viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="7"/><path d="M12 3v6M9 7h6"/></symbol>
+      <symbol id="shell-icon-keyboard" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M6 14h8M16 14h2"/></symbol>
+      <symbol id="shell-icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+      <symbol id="shell-icon-send" viewBox="0 0 24 24"><path d="m4 4 17 8-17 8 3-8-3-8Z"/><path d="M7 12h14"/></symbol>
+      <symbol id="shell-icon-list" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+      <symbol id="shell-icon-bolt" viewBox="0 0 24 24"><path d="m13 2-9 12h7l-1 8 9-12h-7l1-8Z"/></symbol>
+      <symbol id="shell-icon-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h2"/></symbol>
+      <symbol id="shell-icon-file-text" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M14 3v5h5M8 12h8M8 16h8"/></symbol>
+      <symbol id="shell-icon-edit" viewBox="0 0 24 24"><path d="m4 16-.8 4.8L8 20l10.8-10.8a2.8 2.8 0 0 0-4-4Z"/><path d="m13.5 6.5 4 4"/></symbol>
+      <symbol id="shell-icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+      <symbol id="shell-icon-moon" viewBox="0 0 24 24"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z"/></symbol>
+      <symbol id="shell-icon-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+      <symbol id="shell-icon-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+      <symbol id="shell-icon-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.2 1.2"/><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.2-1.2"/></symbol>
+      <symbol id="shell-icon-table" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="1"/><path d="M4 10h16M4 15h16M10 5v14M15 5v14"/></symbol>
+      <symbol id="shell-icon-puzzle" viewBox="0 0 24 24"><path d="M9 4a3 3 0 1 1 5.8 1H19a1 1 0 0 1 1 1v4.2a3 3 0 1 0 0 5.6V19a1 1 0 0 1-1 1h-4.2a3 3 0 1 0-5.6 0H5a1 1 0 0 1-1-1v-4.2a3 3 0 1 0 0-5.6V6a1 1 0 0 1 1-1h4.2A3 3 0 0 1 9 4Z"/></symbol>
+      <symbol id="shell-icon-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol>
+      <symbol id="shell-icon-open" viewBox="0 0 24 24"><path d="M14 5h5v5M19 5l-9 9"/><path d="M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></symbol>
+      <symbol id="shell-icon-bookmark" viewBox="0 0 24 24"><path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4Z"/></symbol>
+      <symbol id="shell-icon-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 5 5"/></symbol>
+      <symbol id="shell-icon-history" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="shell-icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="shell-icon-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.5"/><path d="m4 17 5-5 3 3 2-2 6 6"/></symbol>
+      <symbol id="shell-icon-layout" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></symbol>
+      <symbol id="shell-icon-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.4 2.5 3.6 5.5 3.6 9S14.4 18.5 12 21M12 3c-2.4 2.5-3.6 5.5-3.6 9S9.6 18.5 12 21"/></symbol>
+      <symbol id="shell-icon-network" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/><path d="M10 7h4v10h4M7 10v4h7"/></symbol>
+      <symbol id="shell-icon-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01M11 7h6M11 17h6"/></symbol>
+      <symbol id="shell-icon-tab" viewBox="0 0 24 24"><path d="M4 6a2 2 0 0 1 2-2h6l2 2h4a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></symbol>
+      <symbol id="shell-icon-download" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 20h14"/></symbol>
+      <symbol id="shell-icon-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol>
+      <symbol id="shell-icon-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+      <symbol id="shell-icon-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+      <symbol id="shell-icon-pin" viewBox="0 0 24 24"><path d="M8 3h8l-1 5 3 3v2H6v-2l3-3-1-5Z"/><path d="M12 13v8"/></symbol>
+      <symbol id="shell-icon-more" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></symbol>
+    </svg>
+    <header class="tab-strip" aria-label="浏览器标签">
+      <button id="tab-menu" class="icon-button tab-menu-button" type="button" title="搜索标签页 Ctrl+Shift+A" aria-label="搜索标签页" aria-haspopup="dialog" aria-expanded="false" aria-controls="tab-switcher-panel"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-chevron-down"></use></svg></button>
+      <div id="tabs" class="tabs" role="tablist" aria-label="打开的标签">
+        <span id="tab-active-surface" class="tab-active-surface" aria-hidden="true"></span>
+      </div>
+      <button id="new-tab" class="icon-button new-tab-button" type="button" title="新建标签页" aria-label="新建标签页"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-plus"></use></svg></button>
+      <button id="browser-settings-toggle" class="icon-button browser-settings-button" type="button" title="浏览器设置" aria-label="浏览器设置" aria-expanded="false" aria-controls="browser-settings-panel"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-settings"></use></svg></button>
+      <aside id="tab-switcher-panel" class="tab-switcher-panel" hidden role="dialog" aria-label="搜索标签页" aria-modal="false">
+        <label class="tab-switcher-search"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-search"></use></svg><input id="tab-switcher-search" type="search" autocomplete="off" placeholder="搜索标签页" aria-label="搜索打开的标签页" /><kbd>Ctrl+Shift+A</kbd></label>
+        <div class="tab-switcher-content">
+          <section class="tab-switcher-section" aria-label="打开的标签页">
+            <h2 class="tab-switcher-heading">打开的标签页</h2>
+            <div id="tab-switcher-open" class="tab-switcher-list"></div>
+          </section>
+          <section class="tab-switcher-section" aria-label="最近关闭的标签页">
+            <h2 class="tab-switcher-heading">最近关闭的标签页</h2>
+            <div id="tab-switcher-closed" class="tab-switcher-list"></div>
+          </section>
+        </div>
+      </aside>
+    </header>
+    <header class="toolbar">
+      <div class="navigation" aria-label="浏览器导航">
+        <button id="back" class="icon-button" title="后退" aria-label="后退"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-back"></use></svg></button>
+        <button id="forward" class="icon-button" title="前进" aria-label="前进"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-forward"></use></svg></button>
+        <button id="reload" class="icon-button" title="刷新" aria-label="刷新"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-refresh"></use></svg></button>
+        <form id="address-form" class="address-form">
+          <div class="address-input-wrap">
+            <input id="address" autocomplete="off" spellcheck="false" aria-label="地址" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="address-suggestions" />
+            <button id="bookmark-toggle" type="button" class="icon-button bookmark-button" title="添加收藏" aria-label="添加收藏" aria-pressed="false"><span class="bookmark-star" aria-hidden="true">☆</span></button>
+            <div id="address-suggestions" class="address-suggestions" role="listbox" hidden></div>
+          </div>
+        </form>
+        <button id="agent-toggle" class="icon-button toolbar-agent-button" type="button" title="AI 网页助手" aria-label="AI 网页助手" aria-expanded="false" aria-controls="agent-panel"><svg class="shell-icon agent-ai-icon" aria-hidden="true"><use href="#shell-icon-ai"></use></svg><span class="agent-indicator" aria-hidden="true"></span></button>
+      </div>
+      <div class="shell-actions">
+        <button type="submit" form="address-form" class="icon-button go-button" title="打开地址" aria-label="打开地址"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-open"></use></svg></button>
+        <button id="downloads-toggle" class="icon-button downloads-button" type="button" title="下载" aria-label="下载" aria-expanded="false" aria-controls="downloads-panel"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-download"></use></svg><span id="download-count" class="extension-count" hidden>0</span></button>
+        <button id="local-listeners-toggle" class="icon-button" type="button" title="本地服务" aria-label="本地服务" aria-expanded="false" aria-controls="local-listeners-panel"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-server"></use></svg></button>
+        <div id="extension-toolbar" class="extension-toolbar" aria-label="插件快捷入口"></div>
+        <button id="extensions-toggle" class="icon-button extension-button" type="button" title="扩展程序" aria-label="扩展程序" aria-expanded="false"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-puzzle"></use></svg><span id="extension-count" class="extension-count" hidden>0</span></button>
+      </div>
+      <div class="identity">
+        <div class="identity-primary">
+          <span id="profile-name" class="identity-name">浏览器环境</span>
+          <span id="connection-latency" class="identity-latency">未测</span>
+        </div>
+        <span class="connection-details" aria-label="连接位置">
+          <span class="connection-detail"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-globe"></use></svg><span id="connection-country">系统直连</span></span>
+          <span class="connection-detail"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-network"></use></svg><span id="connection-ip">未解析</span></span>
+        </span>
+        <button id="browser-more-toggle" class="icon-button browser-more-button" type="button" title="更多浏览器功能" aria-label="更多浏览器功能" aria-expanded="false" aria-controls="browser-more-menu"><span aria-hidden="true">···</span></button>
+        <span class="sr-only" id="shell-status" title="就绪" aria-label="就绪" role="status">就绪</span>
+      </div>
+    </header>
+    <aside id="browser-more-menu" class="browser-more-menu" hidden aria-label="更多浏览器功能">
+      <button type="button" data-browser-command="new-tab">打开新的标签页 <kbd>Ctrl+T</kbd></button>
+      <button type="button" data-browser-command="new-window">打开新的窗口 <kbd>Ctrl+N</kbd></button>
+      <button type="button" data-browser-command="incognito">打开新的无痕窗口 <kbd>Ctrl+Shift+N</kbd></button>
+      <div class="browser-more-separator"></div>
+      <button type="button" data-browser-command="passwords">密码和自动填充 <span>›</span></button>
+      <button type="button" data-browser-command="history">历史记录 <span>›</span></button>
+      <button type="button" data-browser-command="downloads">下载内容 <kbd>Ctrl+J</kbd></button>
+      <button type="button" data-browser-command="bookmarks">书签和清单 <span>›</span></button>
+      <button type="button" data-browser-command="extensions">扩展程序 <span>›</span></button>
+      <button type="button" data-browser-command="clear-data">删除浏览数据… <kbd>Ctrl+Shift+Del</kbd></button>
+      <div class="browser-more-separator"></div>
+      <button type="button" data-browser-command="zoom-out">缩小 <span>−</span></button>
+      <button type="button" data-browser-command="zoom-in">放大 <span>＋</span></button>
+      <button type="button" data-browser-command="fullscreen">全屏 <kbd>F11</kbd></button>
+      <button type="button" data-browser-command="print">打印… <kbd>Ctrl+P</kbd></button>
+      <button type="button" data-browser-command="translate">翻译…</button>
+      <button type="button" data-browser-command="find">查找和修改 <span>›</span></button>
+      <button type="button" data-browser-command="share">投放、保存和分享 <span>›</span></button>
+      <button type="button" data-browser-command="more-tools">更多工具 <span>›</span></button>
+      <div class="browser-more-separator"></div>
+      <button type="button" data-browser-command="help">帮助 <span>›</span></button>
+      <button type="button" data-browser-command="settings">设置</button>
+      <button type="button" data-browser-command="quit">退出</button>
+    </aside>
+    <aside id="extensions-panel" class="extensions-panel" hidden aria-label="插件列表">
+      <div class="extensions-panel-heading"><strong>扩展程序</strong><button id="extensions-close" class="agent-icon-button" type="button" title="关闭" aria-label="关闭插件列表"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-close"></use></svg></button></div>
+      <p class="extensions-panel-summary">固定的插件会显示在浏览器工具栏中。</p>
+      <div id="extensions-list" class="extensions-list"></div>
+      <p id="extensions-status" class="extensions-status" role="alert" aria-live="assertive" hidden></p>
+      <p id="extensions-empty" class="extensions-empty" hidden>还没有安装插件</p>
+      <div class="extensions-panel-footer"><button id="open-extension-manager" type="button"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-settings"></use></svg>管理扩展程序</button></div>
+    </aside>
+    <aside id="downloads-panel" class="downloads-panel" hidden aria-label="下载管理">
+      <div class="downloads-panel-heading"><strong>下载</strong><button id="downloads-clear" class="panel-link" type="button" title="清除已完成下载">清除已完成</button></div>
+      <div id="downloads-list" class="downloads-list"></div>
+      <p id="downloads-empty" class="extensions-empty">暂无下载</p>
+    </aside>
+    <aside id="local-listeners-panel" class="local-listeners-panel" hidden aria-label="本地服务">
+      <div class="downloads-panel-heading"><strong>本地服务</strong><button id="local-listeners-refresh" class="panel-link" type="button" title="刷新本地监听端口"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-refresh"></use></svg>刷新</button></div>
+      <label class="local-listeners-protocol">打开方式<select id="local-listeners-scheme" autocomplete="off"><option value="http">HTTP</option><option value="https">HTTPS</option></select></label>
+      <p id="local-listeners-status" class="local-listeners-status" role="status">正在读取本地监听端口…</p>
+      <div id="local-listeners-list" class="local-listeners-list"></div>
+      <p id="local-listeners-empty" class="extensions-empty" hidden>当前没有可识别的前端项目端口</p>
+    </aside>
+    <aside id="browser-settings-panel" class="browser-settings-panel" hidden aria-label="浏览器设置">
+      <header class="browser-settings-heading">
+        <strong>浏览器设置</strong>
+        <button id="browser-settings-close" class="agent-icon-button" type="button" title="返回浏览器" aria-label="返回浏览器"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-close"></use></svg></button>
+      </header>
+      <form id="browser-settings-form" class="browser-settings-form">
+        <!-- 旧版 Agent 字段保留在 DOM 以兼容旧 profile 窗口；可见设置已移到 Agent 面板。 -->
+        <div class="browser-settings-legacy-agent" hidden aria-hidden="true">
+          <label class="browser-settings-field">Agent API URL<input id="setting-agent-api-url" type="url" autocomplete="off" spellcheck="false" /></label>
+          <label class="browser-settings-field">协议后缀<input id="setting-agent-protocol-suffix" type="text" autocomplete="off" spellcheck="false" /></label>
+          <label class="browser-settings-field">API<input id="setting-agent-api" type="text" autocomplete="off" spellcheck="false" /></label>
+          <label class="browser-settings-field">Key<input id="setting-agent-key" type="password" autocomplete="new-password" /></label>
+          <div class="browser-settings-key-row"><span id="setting-agent-key-status">未保存密钥</span><button id="setting-agent-key-clear" class="panel-link" type="button" hidden>清除</button></div>
+        </div>
+        <label class="browser-settings-field">搜索引擎<input id="setting-search-engine-url" type="text" autocomplete="off" spellcheck="false" placeholder="https://www.google.com/search?q=%s" /></label>
+        <label class="browser-settings-field">常用搜索引擎<select id="setting-search-engine-preset" autocomplete="off"></select></label>
+        <label class="browser-settings-field browser-settings-checkbox"><span>所有页面显示收藏栏（Ctrl+Alt+D）</span><input id="setting-bookmark-bar-always" type="checkbox" /></label>
+        <section class="browser-settings-section" aria-label="新标签页">
+          <div class="browser-settings-section-title">新标签页</div>
+          <label class="browser-settings-field">Banner 类型<select id="setting-new-tab-banner-type"><option value="auto">自动</option><option value="image">图片 / GIF</option><option value="video">视频</option></select></label>
+          <label class="browser-settings-field">Banner 地址<input id="setting-new-tab-banner-source" type="text" autocomplete="off" spellcheck="false" placeholder="https://example.com/banner.gif" /></label>
+          <label class="browser-settings-field">选择本地 Banner<input id="setting-new-tab-banner-file" type="file" accept="image/*,video/*" /></label>
+          <div class="new-tab-sites-editor-heading"><span>常用网站</span><button id="new-tab-site-add" class="panel-link" type="button" title="添加常用网站" aria-label="添加常用网站"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-plus"></use></svg></button></div>
+          <div id="new-tab-sites-editor" class="new-tab-sites-editor"></div>
+        </section>
+        <section class="browser-settings-section" aria-label="快捷键与鼠标手势">
+          <div class="browser-settings-section-title">快捷键与鼠标手势</div>
+          <label class="browser-settings-field">刷新快捷键<input id="setting-shortcut-reload" type="text" autocomplete="off" spellcheck="false" placeholder="F5 或 Ctrl+R" /></label>
+          <label class="browser-settings-field">开发者工具快捷键<input id="setting-shortcut-devtools" type="text" autocomplete="off" spellcheck="false" placeholder="F12 或 Ctrl+Shift+I" /></label>
+          <label class="browser-settings-field browser-settings-checkbox"><span>启用鼠标手势</span><input id="setting-gesture-enabled" type="checkbox" /></label>
+          <label class="browser-settings-field">手势按键<select id="setting-gesture-button"><option value="right">右键</option><option value="middle">中键</option><option value="left">左键</option></select></label>
+          <label class="browser-settings-field">手势方向<select id="setting-gesture-sequence"><option value="right,left">右滑 → 左滑</option><option value="left,right">左滑 → 右滑</option><option value="up,down">上滑 → 下滑</option><option value="down,up">下滑 → 上滑</option><option value="right,up">右滑 → 上滑</option><option value="right,down">右滑 → 下滑</option><option value="left,up">左滑 → 上滑</option><option value="left,down">左滑 → 下滑</option><option value="up,right">上滑 → 右滑</option><option value="up,left">上滑 → 左滑</option><option value="down,right">下滑 → 右滑</option><option value="down,left">下滑 → 左滑</option></select></label>
+          <label class="browser-settings-field">手势动作<select id="setting-gesture-action"><option value="back">后退一页</option><option value="forward">前进一页</option><option value="reload">刷新页面</option><option value="devtools">打开开发者工具</option></select></label>
+          <label class="browser-settings-field">单段滑动距离（像素）<input id="setting-gesture-threshold" type="number" min="16" max="400" step="1" inputmode="numeric" /></label>
+          <button id="browser-settings-ai" class="panel-link browser-settings-ai" type="button">让 AI 辅助配置</button>
+        </section>
+        <div class="browser-settings-actions"><button id="browser-settings-cancel" class="panel-link" type="button">取消</button><button id="browser-settings-save" class="settings-save-button" type="submit">保存</button></div>
+        <p id="browser-settings-status" class="browser-settings-status" aria-live="polite"></p>
+      </form>
+    </aside>
+    <nav id="bookmark-bar" class="bookmark-bar" hidden aria-label="收藏栏" tabindex="-1"></nav>
+    <div id="bookmark-menu" class="bookmark-menu" role="menu" aria-label="收藏栏菜单" hidden></div>
+    <main class="browser-stage">
+      <div class="page-viewport">
+        <div id="pages" class="pages"></div>
+        <div id="password-vault-prompt" class="password-vault-prompt" hidden role="dialog" aria-label="保存登录信息"></div>
+        <div id="loading" class="loading" hidden>
+          <span class="loading-spinner" aria-hidden="true">
+            <span class="loading-frame">|</span>
+            <span class="loading-frame">/</span>
+            <span class="loading-frame">-</span>
+            <span class="loading-frame">\</span>
+          </span>
+          <span class="sr-only">正在加载</span>
+        </div>
+      </div>
+      <aside id="agent-panel" class="agent-panel" data-theme="dark" hidden aria-label="网页助手对话栏">
+        <header class="agent-panel-header">
+          <div class="agent-heading">
+            <div class="agent-heading-copy"><strong>网页助手</strong></div>
+          </div>
+          <div class="agent-header-actions" aria-label="网页助手工具">
+            <span id="agent-state" class="agent-state" role="status">就绪</span>
+            <button id="agent-settings-toggle" class="agent-icon-button" type="button" title="Agent 设置" aria-label="Agent 设置" aria-expanded="false" aria-controls="agent-settings-panel"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-settings"></use></svg></button>
+            <button id="agent-theme-toggle" class="agent-icon-button agent-theme-button" type="button" title="切换到浅色主题" aria-label="切换到浅色主题"><svg class="shell-icon agent-theme-icon agent-theme-icon-moon" aria-hidden="true"><use href="#shell-icon-moon"></use></svg><svg class="shell-icon agent-theme-icon agent-theme-icon-sun" aria-hidden="true"><use href="#shell-icon-sun"></use></svg></button>
+            <button id="agent-close" class="agent-icon-button" type="button" title="关闭网页助手" aria-label="关闭网页助手"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-close"></use></svg></button>
+          </div>
+        </header>
+        <section id="agent-settings-panel" class="agent-settings-panel" hidden aria-label="Agent 设置">
+          <form id="agent-settings-form" class="agent-settings-form">
+            <div class="agent-settings-section">
+              <div class="agent-settings-section-title">接入</div>
+              <p id="agent-setting-scope" class="agent-setting-scope" role="status"></p>
+              <label class="agent-settings-field">接口协议<select id="agent-setting-protocol" autocomplete="off"></select></label>
+              <label class="agent-settings-field">接口地址<input id="agent-setting-base-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1" /></label>
+              <label class="agent-settings-field">模型
+                <div class="agent-setting-model-row"><input id="agent-setting-model" type="text" list="agent-setting-model-options" autocomplete="off" spellcheck="false" placeholder="例如 gpt-4o-mini" /><button id="agent-setting-model-refresh" class="agent-model-refresh agent-setting-model-refresh" type="button" title="拉取模型列表" aria-label="拉取模型列表"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-refresh"></use></svg></button></div>
+                <datalist id="agent-setting-model-options"></datalist>
+                <span id="agent-setting-model-status" class="agent-setting-model-status" role="status"></span>
+              </label>
+              <label class="agent-settings-field">Token<input id="agent-setting-token" type="password" autocomplete="new-password" spellcheck="false" placeholder="留空保持当前 Token" /></label>
+              <div class="agent-settings-token-row"><span id="agent-setting-token-status">未保存 Token</span><button id="agent-setting-token-clear" class="panel-link" type="button" hidden>清除</button></div>
+            </div>
+            <div class="agent-settings-section">
+              <div class="agent-settings-section-title">行为</div>
+              <details class="agent-settings-advanced">
+                <summary>高级参数</summary>
+                 <label class="agent-settings-field">上下文预算（tokens）<input id="agent-setting-context" type="number" min="1" step="1000" inputmode="numeric" /></label>
+                 <label class="agent-settings-field">单次回复上限（tokens）<input id="agent-setting-output" type="number" min="1" step="256" inputmode="numeric" /></label>
+                 <label class="agent-settings-field">思考等级<select id="agent-setting-reasoning" autocomplete="off"></select></label>
+                 <label class="agent-settings-field">温度<input id="agent-setting-temperature" type="number" min="0" max="2" step="0.1" inputmode="decimal" /></label>
+                <label class="agent-settings-field">单轮最多工具步数<input id="agent-setting-steps" type="number" min="0" step="1" inputmode="numeric" /></label>
+              </details>
+            </div>
+            <div class="agent-settings-actions"><button id="agent-settings-cancel" class="panel-link" type="button">取消</button><button id="agent-settings-save" class="settings-save-button" type="submit">保存设置</button></div>
+            <p id="agent-settings-status" class="agent-settings-status" aria-live="polite"></p>
+          </form>
+        </section>
+        <div class="agent-context" id="agent-context" aria-live="polite">
+          <span class="agent-context-title" id="agent-context-title">未加载页面</span>
+          <span class="agent-context-url" id="agent-context-url">about:blank</span>
+        </div>
+        <section id="agent-human-verification" class="agent-human-verification" hidden aria-live="assertive">
+          <strong>需要人工验证</strong>
+          <span id="agent-human-verification-message">请在当前网页中手动完成验证。</span>
+          <button id="agent-human-verification-resume" class="agent-human-verification-resume" type="button">立即检查</button>
+        </section>
+        <div id="agent-transcript" class="agent-transcript" role="log" aria-live="polite">
+        </div>
+        <form id="agent-composer-form" class="agent-composer">
+          <div class="agent-input-status" aria-label="虚拟输入状态">
+            <span class="agent-input-status-label"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-mouse"></use></svg><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-keyboard"></use></svg>虚拟输入</span>
+            <span>已绑定当前标签</span>
+          </div>
+          <textarea id="agent-composer" rows="2" placeholder="和网页助手聊聊，或告诉我你想完成什么…" aria-label="网页助手输入"></textarea>
+          <div class="agent-composer-controls">
+            <div class="agent-model-picker-wrap">
+              <button id="agent-model-summary" class="agent-model-summary" type="button" title="选择 Agent 模型" aria-label="选择 Agent 模型" aria-haspopup="listbox" aria-expanded="false" aria-controls="agent-model-picker" disabled>未配置模型</button>
+              <div id="agent-model-picker" class="agent-model-picker" hidden>
+                <div id="agent-model-picker-status" class="agent-model-picker-status" role="status"></div>
+                <div class="agent-model-picker-columns">
+                  <section class="agent-model-picker-column" aria-labelledby="agent-model-options-heading">
+                    <div id="agent-model-options-heading" class="agent-model-picker-heading">模型</div>
+                    <div id="agent-model-options" class="agent-model-options" role="listbox" aria-label="Agent 模型列表"></div>
+                  </section>
+                  <section class="agent-model-picker-column" aria-labelledby="agent-reasoning-options-heading">
+                    <div id="agent-reasoning-options-heading" class="agent-model-picker-heading">思考等级</div>
+                    <div id="agent-reasoning-options" class="agent-reasoning-options" role="listbox" aria-label="Agent 思考等级"></div>
+                  </section>
+                </div>
+                <button id="agent-model-refresh" class="agent-model-refresh" type="button" title="刷新模型列表" aria-label="刷新模型列表"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-refresh"></use></svg><span>刷新模型列表</span></button>
+              </div>
+            </div>
+            <div class="agent-quick-actions" aria-label="网页动作">
+              <button type="button" class="agent-quick-action" data-agent-action="screenshot" title="观察页面" aria-label="观察页面"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-camera"></use></svg><span>观察页面</span></button>
+              <button type="button" class="agent-quick-action" data-agent-action="page" title="读取页面" aria-label="读取页面"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-file-text"></use></svg><span>读取页面</span></button>
+              <button type="button" class="agent-quick-action" data-agent-action="links" title="收集链接" aria-label="收集链接"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-link"></use></svg><span>收集链接</span></button>
+              <button type="button" class="agent-quick-action" data-agent-action="tables" title="收集表格" aria-label="收集表格"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-table"></use></svg><span>收集表格</span></button>
+              <button type="button" class="agent-quick-action" data-agent-action="top" title="滚动到顶部" aria-label="滚动到顶部"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-arrow-up"></use></svg><span>滚动到顶部</span></button>
+              <button type="button" class="agent-quick-action" data-agent-action="bottom" title="滚动到底部" aria-label="滚动到底部"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-arrow-down"></use></svg><span>滚动到底部</span></button>
+            </div>
+            <div class="agent-composer-footer">
+              <button id="agent-queue-send" class="agent-composer-action" type="button" title="排队发送" aria-label="排队发送" hidden><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-list"></use></svg></button>
+              <button id="agent-send-now" class="agent-composer-action" type="button" title="立即发送" aria-label="立即发送" hidden><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-bolt"></use></svg></button>
+              <button id="agent-send" class="agent-send" type="submit" title="发送" aria-label="发送"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-send"></use></svg></button>
+            </div>
+          </div>
+        </form>
+      </aside>
+    </main>
+    <div id="shell-input-modal" class="shell-modal-backdrop" hidden>
+      <section class="shell-modal" role="dialog" aria-modal="true" aria-labelledby="shell-input-modal-title" aria-describedby="shell-input-modal-message">
+        <header class="shell-modal-header">
+          <span class="shell-modal-icon" aria-hidden="true"><svg class="shell-icon"><use href="#shell-icon-edit"></use></svg></span>
+          <div class="shell-modal-heading"><p id="shell-input-modal-eyebrow">浏览器操作</p><h2 id="shell-input-modal-title">输入内容</h2></div>
+          <button id="shell-input-modal-close" class="icon-button" type="button" title="关闭" aria-label="关闭"><svg class="shell-icon"><use href="#shell-icon-close"></use></svg></button>
+        </header>
+        <div class="shell-modal-body">
+          <p id="shell-input-modal-message"></p>
+          <p id="shell-input-modal-detail" class="shell-modal-detail" hidden></p>
+          <label id="shell-input-modal-field" class="shell-modal-field"><span id="shell-input-modal-label">内容</span><input id="shell-input-modal-value" type="text" autocomplete="off" /></label>
+        </div>
+        <div class="shell-modal-actions"><button id="shell-input-modal-cancel" class="shell-modal-button" type="button">取消</button><button id="shell-input-modal-submit" class="shell-modal-button is-primary" type="button">确定</button></div>
+      </section>
+    </div>
+    <div id="zoom-indicator" class="zoom-indicator" role="status" aria-live="polite" hidden></div>
+    <script src="browser-agent-actions.js"></script>
+    <script src="agent-retry.js"></script>
+    <script src="agent-completion.js"></script>
+    <script src="interface-zoom.js"></script>
+    <script src="browser-shell.js"></script>
+  </body>
+</html>

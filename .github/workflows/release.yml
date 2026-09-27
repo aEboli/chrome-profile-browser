@@ -1,0 +1,125 @@
+name: Test and Release
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Check source and versions
+        run: npm run check
+      - name: Run tests
+        run: npm test
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            runner: windows-latest
+            command: npm run dist:win
+            artifact: windows-x64
+            path: |
+              release/*.exe
+              release/*.blockmap
+          - label: macOS Intel
+            runner: macos-15-intel
+            command: npm run dist:mac:x64
+            artifact: macos-x64
+            path: |
+              release/*.dmg
+              release/*.zip
+          - label: macOS Apple Silicon
+            runner: macos-latest
+            command: npm run dist:mac:arm64
+            artifact: macos-arm64
+            path: |
+              release/*.dmg
+              release/*.zip
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Download bundled Windows proxy cores
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $coreDir = Join-Path $env:GITHUB_WORKSPACE 'vendor/cores/win32-x64'
+          New-Item -ItemType Directory -Force -Path $coreDir | Out-Null
+          $xrayZip = Join-Path $env:RUNNER_TEMP 'xray-windows-64.zip'
+          $singboxZip = Join-Path $env:RUNNER_TEMP 'sing-box-windows-amd64.zip'
+          Invoke-WebRequest -Uri 'https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-windows-64.zip' -OutFile $xrayZip
+          Invoke-WebRequest -Uri 'https://github.com/SagerNet/sing-box/releases/download/v1.14.1/sing-box-1.14.1-windows-amd64.zip' -OutFile $singboxZip
+          if ((Get-FileHash $xrayZip -Algorithm SHA256).Hash.ToLower() -ne 'd004c39288ce9ada487c6f398c7c545f7d749e44bdfdd59dbc9f865afba4e1ad') { throw 'Xray archive SHA-256 verification failed' }
+          if ((Get-FileHash $singboxZip -Algorithm SHA256).Hash.ToLower() -ne '5197f16d492d93202dc623622149a6ed040f8eca263128f91d603f2b901baa89') { throw 'sing-box archive SHA-256 verification failed' }
+          $extract = Join-Path $env:RUNNER_TEMP 'chrome-profile-browser-cores'
+          Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -LiteralPath $xrayZip -DestinationPath (Join-Path $extract 'xray')
+          Expand-Archive -LiteralPath $singboxZip -DestinationPath (Join-Path $extract 'singbox')
+          Copy-Item -LiteralPath (Get-ChildItem -Path (Join-Path $extract 'xray') -Filter 'xray.exe' -Recurse | Select-Object -First 1).FullName -Destination (Join-Path $coreDir 'xray.exe') -Force
+          Copy-Item -LiteralPath (Get-ChildItem -Path (Join-Path $extract 'singbox') -Filter 'sing-box.exe' -Recurse | Select-Object -First 1).FullName -Destination (Join-Path $coreDir 'sing-box.exe') -Force
+      - name: Build application
+        run: ${{ matrix.command }}
+      - name: Upload ${{ matrix.label }} assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*-x64'
+          path: artifacts
+          merge-multiple: true
+      - name: Download Apple Silicon assets
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64
+          path: artifacts
+      - name: Show release assets
+        run: find artifacts -maxdepth 1 -type f -print | sort
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" artifacts/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

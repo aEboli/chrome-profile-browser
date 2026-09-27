@@ -1,0 +1,9 @@
+node_modules/
+dist/
+release/
+work/
+.palette/
+.core-download/
+vendor/cores/win32-x64/*.exe
+*.log
+.DS_Store

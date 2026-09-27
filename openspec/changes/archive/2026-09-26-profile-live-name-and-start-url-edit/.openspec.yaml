@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-09-26
+goal: 运行期间可更新环境名称和启动网址，其他运行时配置继续遵循停止要求
