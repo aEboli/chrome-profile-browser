@@ -20,6 +20,8 @@ jobs:
     env:
       TZ: Asia/Shanghai
     steps:
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
       - name: Checkout
         uses: actions/checkout@v4
       - name: Use Node.js
