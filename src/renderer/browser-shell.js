@@ -180,6 +180,7 @@ const agentComposerForm = document.querySelector('#agent-composer-form');
 const agentComposer = document.querySelector('#agent-composer');
 const agentSend = document.querySelector('#agent-send');
 const agentContextUsage = document.querySelector('#agent-context-usage');
+const agentContextUsageUtils = window.browserAgentContextUsage;
 const agentModelPicker = document.querySelector('#agent-model-picker');
 const agentModelPickerStatus = document.querySelector('#agent-model-picker-status');
 const agentModelOptions = document.querySelector('#agent-model-options');
@@ -5169,12 +5170,18 @@ function showAgentContextNotice(message) {
   agentContextNoticeTimer = window.setTimeout(() => {
     agentContextUsage.classList.remove('is-notice');
     agentContextNoticeTimer = null;
+    renderAgentContextUsage();
   }, 2400);
 }
 
 function renderAgentContextUsage() {
   if (!agentContextUsage) return;
   const percent = agentContextUsagePercent();
+  const usedTokens = estimateAgentContextTokens(agentConversation);
+  const budgetTokens = Number(browserSettings.agentContextBudgetTokens);
+  const tokenUsage = Number.isFinite(budgetTokens) && budgetTokens > 0
+    ? `${agentContextUsageUtils.formatTokenCount(usedTokens, 1)} / ${agentContextUsageUtils.formatTokenCount(budgetTokens)}`
+    : `${agentContextUsageUtils.formatTokenCount(usedTokens, 1)} / 未设置`;
   agentContextUsage.textContent = `${percent}%`;
   agentContextUsage.dataset.percent = `${percent}%`;
   const angle = Math.round(percent * 3.6);
@@ -5182,8 +5189,8 @@ function renderAgentContextUsage() {
   agentContextUsage.style.setProperty('--agent-context-color', color);
   agentContextUsage.style.setProperty('--agent-context-angle', `${angle}deg`);
   agentContextUsage.dataset.level = percent >= 90 ? 'critical' : percent >= 75 ? 'warning' : 'normal';
-  agentContextUsage.setAttribute('aria-label', `上下文使用量 ${percent}%`);
-  agentContextUsage.title = `上下文使用量 ${percent}%，点击压缩`;
+  agentContextUsage.setAttribute('aria-label', `上下文使用量 ${tokenUsage}，${percent}%，点击压缩`);
+  agentContextUsage.title = `上下文使用量 ${tokenUsage}（${percent}%），点击压缩`;
 }
 
 function compressAgentConversationIfNeeded(force = false) {

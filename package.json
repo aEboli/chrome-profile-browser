@@ -1,7 +1,7 @@
 {
   "name": "chrome-profile-browser",
-  "version": "0.1.133",
-  "appVersion": "0.1.133",
+  "version": "0.1.134",
+  "appVersion": "0.1.134",
   "private": true,
   "author": "aEboli",
   "description": "本地优先的 Chromium profile 与代理节点工作台",

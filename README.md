@@ -31,7 +31,7 @@
 
 ## 版本号规则
 
-当前版本为 `0.1.133`。产品版本使用 `大版本.小版本.更新号`：大版本示例为 `1.0.000`，小版本示例为 `0.1.000`，小功能更新号每次增加 `0.010`（例如 `0.0.100` → `0.0.110`、`0.0.230` → `0.0.240`），普通更新号每次增加 `0.001`。每次只递增一个层级；递增大版本或小版本时，所有下级归零，例如 `0.6.116` → `0.7.000`。
+当前版本为 `0.1.134`。产品版本使用 `大版本.小版本.更新号`：大版本示例为 `1.0.000`，小版本示例为 `0.1.000`，小功能更新号每次增加 `0.010`（例如 `0.0.100` → `0.0.110`、`0.0.230` → `0.0.240`），普通更新号每次增加 `0.001`。每次只递增一个层级；递增大版本或小版本时，所有下级归零，例如 `0.6.116` → `0.7.000`。
 
 版本更新使用以下命令，命令会同步 `package.json`、`package-lock.json`、README 和应用界面版本。npm 的标准 `version` 字段保留无前导零的兼容值，产品展示值保存在 `appVersion` 中。
 
@@ -73,6 +73,7 @@ npm run version:check    # 检查版本字段是否一致
 - 右侧对话栏可以观察当前页面、读取标签与表格、管理标签、导航网页，并执行 CSS 选择器或坐标驱动的点击、填写、选择、拖拽、滚轮、键盘和文本输入。
 - 通过系统选择器明确授权后，可以列出目录、读取文本文件，并将授权文件上传到当前页面的 `input[type=file]`；授权只在当前 profile 运行期间有效。
 - 支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Google Gemini；可获取模型列表、测试连通性，配置上下文预算、输出长度、温度、思考等级和步骤数。步骤为 `0` 时持续执行。
+- 上下文圆环保留百分比概览；鼠标悬停可查看实际用量与预算，例如 `648.0 k / 1 m`，实际用量统一保留一位小数。
 - JEV 可在 Agent 配置中独立开关。开启后网页任务会在每批动作后判断是否完成并给出置信度与理由；关闭后不会请求 JEV，也不会向 Agent 暴露 JEV 判断工具。
 - 模型、JEV 和可安全重试的页面操作支持指数退避重试；用户可以停止等待，结果不确定的点击、提交和上传会先重新观察。
 - 通过 `window.browserAgent` 和 shell preload bridge 暴露受控观察、动作、标签与文件接口，不执行任意网页脚本。
@@ -201,7 +202,8 @@ $version = (Get-Content package.json -Raw | ConvertFrom-Json).appVersion
 git add -A
 git commit -m "release: v$version"
 git tag "v$version"
-git push origin main --follow-tags
+git push origin main
+git push origin "v$version"
 ```
 
 标签必须与 `package.json` 的 `appVersion` 对应。工作流完成后会自动创建同名 GitHub Release 并上传 Windows、macOS Intel 和 macOS arm64 资产；没有证书时仍会保持未签名发行，签名和公证可通过仓库 Secrets 配置 electron-builder 的官方环境变量。

@@ -191,6 +191,7 @@ test('renders the robot entry and docked conversation panel in the browser shell
   assert.doesNotMatch(html, /agent-queue-send/);
   assert.doesNotMatch(html, /agent-send-now/);
   assert.match(html, /id="agent-context-usage"[^>]*aria-live="polite"/);
+  assert.match(html, /script src="agent-context-usage\.js"/);
   assert.match(html, /id="agent-model-summary"[^>]*aria-controls="agent-model-picker"/);
   assert.match(html, /id="agent-model-options"/);
   assert.match(html, /id="agent-human-verification"/);
@@ -207,6 +208,8 @@ test('renders the robot entry and docked conversation panel in the browser shell
   assert.match(shell, /agentReasoningEffort/);
   assert.match(shell, /\$\{model\} · \${reasoning}/);
   assert.match(shell, /function agentContextUsagePercent\(/);
+  assert.match(shell, /agentContextUsageUtils\.formatTokenCount\(usedTokens, 1\)/);
+  assert.match(shell, /上下文使用量 \$\{tokenUsage\}（\$\{percent\}%\），点击压缩/);
   assert.match(shell, /function requestAgentContextCompression\(/);
   assert.match(shell, /function waitForAgentAction\(/);
   assert.match(shell, /signal\?\.addEventListener\('abort', onAbort/);
