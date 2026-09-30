@@ -15,6 +15,10 @@ test('browser guests route links, popups, context menus, and media downloads', (
   assert.match(main, /下载视频/);
   assert.match(main, /播放\/暂停/);
   assert.match(main, /media\.controls = true/);
+  assert.match(main, /\{ label: '复制图片', click: \(\) => copyGuestImage\(guestContents, params\) \}/);
+  assert.match(main, /copyImageAt\(Math\.round\(x\), Math\.round\(y\)\)/);
+  assert.match(main, /为此图片创建二维码/);
+  assert.match(main, /showResourceQrCode\(hostWindow, mediaUrl, '图片二维码'\)/);
   assert.match(main, /showGuestContextMenu\(/);
   assert.match(main, /sendProfileTabOpen\(/);
   assert.match(main, /contents\.downloadURL/);

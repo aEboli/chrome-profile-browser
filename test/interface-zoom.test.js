@@ -125,6 +125,7 @@ test('both app windows wire interface zoom and guest-page input reaches the brow
   const managerHtml = fs.readFileSync(path.join(root, 'src', 'renderer', 'index.html'), 'utf8');
   const shellRenderer = fs.readFileSync(path.join(root, 'src', 'renderer', 'browser-shell.js'), 'utf8');
   const shellHtml = fs.readFileSync(path.join(root, 'src', 'renderer', 'browser-shell.html'), 'utf8');
+  const shellCss = fs.readFileSync(path.join(root, 'src', 'renderer', 'browser-shell.css'), 'utf8');
   const mainSource = fs.readFileSync(path.join(root, 'src', 'main', 'main.js'), 'utf8');
 
   assert.match(managerHtml, /interface-zoom\.js/);
@@ -136,10 +137,10 @@ test('both app windows wire interface zoom and guest-page input reaches the brow
   assert.match(fs.readFileSync(path.join(root, 'src', 'main', 'browser-password-preload.js'), 'utf8'), /installGuestInterfaceZoom/);
   assert.match(shellRenderer, /event\?\.channel === 'browser-shell:interface-zoom'/);
   assert.match(shellRenderer, /applyZoom: \(factor\) => \{/);
-  assert.match(shellRenderer, /showGuestZoomIndicator\(webview, shellInterfaceZoom\?\.getPercentage\(\)\)/);
-  assert.match(shellRenderer, /__cpb_zoom_indicator_timer__/);
-  assert.match(shellRenderer, /window\.setTimeout\(\(\) => \{/);
-  assert.match(shellRenderer, /if \(current\) current\.remove\(\);/);
+  assert.doesNotMatch(shellRenderer, /__cpb_zoom_indicator__/);
+  assert.match(shellHtml, /class="shell-actions"[\s\S]*?<span class="zoom-indicator-slot"><span id="zoom-indicator"/);
+  assert.match(shellCss, /\.zoom-indicator-slot\s*\{[^}]*flex:\s*0 0 68px/s);
+  assert.doesNotMatch(shellCss, /\.zoom-indicator\s*\{[^}]*position:\s*fixed/s);
   assert.match(shellRenderer, /case 'zoom-out': if \(shellInterfaceZoom\) shellInterfaceZoom\.step\(-1\)/);
   assert.match(shellRenderer, /case 'zoom-in': if \(shellInterfaceZoom\) shellInterfaceZoom\.step\(1\)/);
   assert.match(shellRenderer, /syncGuestZoomFactor\(view\)/);

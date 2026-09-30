@@ -38,11 +38,14 @@ test('store provides browser shell agent and search defaults', () => {
   assert.equal(state.settings.agentProfileScope, 'all');
   assert.deepEqual(state.settings.agentProfileIds, []);
   assert.deepEqual(state.settings.agentProfileOverrides, {});
+  assert.equal(state.settings.jevAutoJudgeEnabled, true);
   assert.equal(state.settings.jevProvider, 'typesafe');
   assert.equal(state.settings.jevBaseUrl, 'https://api.typesafe.ai');
   assert.equal(state.settings.jevModel, 'jev-latest');
   assert.equal(state.settings.jevKey, '');
   assert.equal(state.settings.searchEngineUrl, 'https://www.google.com/search?q=%s');
+  assert.equal(state.settings.newTabBackgroundOpacity, 0.72);
+  assert.equal(state.settings.newTabBackgroundBlur, 18);
   assert.deepEqual(state.settings.browserShortcuts, { reload: 'F5', devtools: 'F12' });
   assert.deepEqual(state.settings.mouseGesture, {
     enabled: true,
@@ -53,6 +56,16 @@ test('store provides browser shell agent and search defaults', () => {
   });
   assert.equal(state.settings.theme.preset, 'midnight');
   assert.equal(state.settings.theme.background, '#0f1423');
+});
+
+test('store preserves a disabled JEV setting and upgrades legacy settings as enabled', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-profile-browser-jev-'));
+  const filePath = path.join(dir, 'state.json');
+  fs.writeFileSync(filePath, JSON.stringify({ settings: { jevAutoJudgeEnabled: false } }));
+  assert.equal(createStore(filePath).load().settings.jevAutoJudgeEnabled, false);
+
+  fs.writeFileSync(filePath, JSON.stringify({ settings: {} }));
+  assert.equal(createStore(filePath).load().settings.jevAutoJudgeEnabled, true);
 });
 
 test('store provides new-tab search, site, banner, and bookmark-bar defaults', () => {
@@ -77,6 +90,27 @@ test('store drops unsafe new-tab media and site URLs while keeping safe values',
   const state = createStore(filePath).load();
   assert.deepEqual(state.settings.newTabSites.map((item) => item.id), ['safe']);
   assert.deepEqual(state.settings.newTabBanner, { type: 'image', source: '' });
+});
+
+test('store keeps new-tab background controls independent and compatible with legacy theme values', () => {
+  const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-profile-browser-'));
+  const legacyPath = path.join(legacyDir, 'state.json');
+  fs.writeFileSync(legacyPath, JSON.stringify({ settings: {
+    theme: { backgroundOpacity: 0.31, blur: 9 },
+  } }), 'utf8');
+  const legacy = createStore(legacyPath).load();
+  assert.equal(legacy.settings.newTabBackgroundOpacity, 0.31);
+  assert.equal(legacy.settings.newTabBackgroundBlur, 9);
+
+  const boundedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-profile-browser-'));
+  const boundedPath = path.join(boundedDir, 'state.json');
+  fs.writeFileSync(boundedPath, JSON.stringify({ settings: {
+    newTabBackgroundOpacity: 4,
+    newTabBackgroundBlur: -5,
+  } }), 'utf8');
+  const bounded = createStore(boundedPath).load();
+  assert.equal(bounded.settings.newTabBackgroundOpacity, 1);
+  assert.equal(bounded.settings.newTabBackgroundBlur, 0);
 });
 
 test('store falls back from an invalid agent reasoning level', () => {

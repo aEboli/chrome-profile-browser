@@ -21,6 +21,13 @@ const initialState = {
   core: {},
   engine: { mode: "electron", configured: false },
   engineUpdate: null,
+  bookmarkImportSources: [],
+  bookmarkImportSelectedSourceIds: [],
+  bookmarkImportTargetId: "",
+  bookmarkImportLoading: false,
+  bookmarkImportBusy: false,
+  bookmarkImportSourceError: "",
+  bookmarkImportResult: null,
   extensionStore: {
     keyword: "",
     page: 1,
@@ -110,10 +117,13 @@ let clearManagerJevToken = false;
 let agentModelFetchKey = "";
 let agentModelFetchPromise = null;
 let agentModelFetchGeneration = 0;
+let agentModelRequestId = "";
+let agentConnectionTestRequestId = "";
 const passwordRevealRequests = new WeakMap();
 let activeConfirmDialog = null;
 let extensionStoreProxySelectionGeneration = 0;
 let extensionStoreProxySelectionPromise = null;
+let bookmarkImportSourceRequestId = 0;
 
 const viewTitles = {
   launchpad: ["启动器", "环境选择"],
@@ -713,12 +723,16 @@ function profileIpValue(details, keys, fallback) {
 
 function renderProfileIpSummary(profile, view = "profiles") {
   const details = profileIpDetails(profile);
+  const health = profileConnectionHealth(profile);
   const metadata = ipSummaryMetadata(details);
   const ipAddress = profileIpValue(details, ["ipAddress", "ip", "resolvedIp"], "未解析");
+  const latency = connectionLatency(health);
+  const latencyMarkup = view === "profiles" ? `<span class="profile-ip-latency" aria-live="polite">延迟：${escapeHtml(latency)}</span>` : "";
+  const summaryLabel = view === "profiles" ? `${metadata} ${ipAddress} 延迟：${latency}` : `${metadata} ${ipAddress}`;
   const isOpen = appState.connectionPicker.profileId === profile.id;
   const pickerId = `connection-options-${view}-${profile.id}`;
   return `<div class="profile-ip-picker profile-connection-picker${isOpen ? " is-open" : ""}" data-connection-picker data-profile-id="${escapeHtml(profile.id)}">
-    <button class="profile-ip-summary" type="button" aria-haspopup="listbox" aria-expanded="${isOpen}" aria-controls="${escapeHtml(pickerId)}" aria-label="${escapeHtml(`${metadata} ${ipAddress}`)}" title="点击选择连接" data-connection-trigger>${renderIpSummary(details, ipAddress, "profile-ip-metadata", "profile-ip-address")}</button>
+    <button class="profile-ip-summary" type="button" aria-haspopup="listbox" aria-expanded="${isOpen}" aria-controls="${escapeHtml(pickerId)}" aria-label="${escapeHtml(summaryLabel)}" title="点击选择连接" data-connection-trigger>${renderIpSummary(details, ipAddress, "profile-ip-metadata", "profile-ip-address")}${latencyMarkup}</button>
     <div class="connection-picker-popover" id="${escapeHtml(pickerId)}" popover="manual" role="dialog" aria-label="选择 ${escapeHtml(profile.name)} 的连接"${isOpen ? "" : " hidden"}>${isOpen ? `<label class="connection-picker-search"><span class="sr-only">搜索连接</span>${icon("search")}<input type="search" value="${escapeHtml(appState.connectionPicker.filter)}" placeholder="搜索节点、地址或订阅" autocomplete="off" data-connection-search /></label><div class="connection-picker-options">${renderConnectionPickerOptions(profile)}</div>` : ""}</div>
   </div>`;
 }
@@ -1125,6 +1139,7 @@ function agentFormElements() {
     temperature: $("#manager-agent-temperature"),
     steps: $("#manager-agent-steps"),
     jevProvider: $("#manager-jev-provider"),
+    jevAutoJudgeEnabled: $("#manager-jev-enabled"),
     jevBaseUrl: $("#manager-jev-base-url"),
     jevModel: $("#manager-jev-model"),
     jevToken: $("#manager-jev-token"),
@@ -1155,6 +1170,10 @@ function fillAgentForm(settings = {}, profileId = "") {
   if (elements.model) elements.model.value = String(valueOf(settings, ["agentModel", "agentApi"], ""));
   if (elements.modelOptions) elements.modelOptions.replaceChildren();
   if (elements.modelStatus) elements.modelStatus.textContent = "点击模型输入框获取可用模型";
+  if (agentModelRequestId) api.cancelAgentRequest?.(agentModelRequestId);
+  if (agentConnectionTestRequestId) api.cancelAgentRequest?.(agentConnectionTestRequestId);
+  agentModelRequestId = "";
+  agentConnectionTestRequestId = "";
   agentModelFetchKey = "";
   agentModelFetchGeneration += 1;
   if (elements.token) elements.token.value = "";
@@ -1184,6 +1203,7 @@ function fillAgentForm(settings = {}, profileId = "") {
       return node;
     }));
   }
+  if (elements.jevAutoJudgeEnabled) elements.jevAutoJudgeEnabled.checked = settings.jevAutoJudgeEnabled !== false;
   if (elements.jevBaseUrl) elements.jevBaseUrl.value = String(valueOf(settings, ["jevBaseUrl"], "https://api.typesafe.ai"));
   if (elements.jevModel) elements.jevModel.value = String(valueOf(settings, ["jevModel"], "jev-latest"));
   if (elements.jevToken) elements.jevToken.value = "";
@@ -1231,13 +1251,23 @@ async function fetchAgentModels(force = false) {
   const key = JSON.stringify({ ...request, token: request.token ? "custom" : "stored" });
   if (!force && key === agentModelFetchKey && elements.modelOptions.options.length) return;
   if (agentModelFetchPromise && !force) return agentModelFetchPromise;
+  if (force) {
+    if (agentModelRequestId) api.cancelAgentRequest?.(agentModelRequestId);
+    agentModelRequestId = "";
+    agentModelFetchGeneration += 1;
+    agentModelFetchPromise = null;
+  }
   agentModelFetchKey = key;
   const generation = agentModelFetchGeneration;
   if (elements.modelStatus) elements.modelStatus.textContent = "获取模型列表中…";
   elements.modelRefresh?.classList.add("is-loading");
+  elements.modelRefresh?.setAttribute("title", "取消模型列表请求");
+  elements.modelRefresh?.setAttribute("aria-label", "取消模型列表请求");
   agentModelFetchPromise = (async () => {
     try {
-      const result = await invokeApi("fetchAgentModels", request);
+      const result = await api.fetchAgentModels(request, (id) => {
+        if (generation === agentModelFetchGeneration) agentModelRequestId = id;
+      });
       if (!result?.ok) throw new Error(result?.error || "模型列表获取失败");
       if (generation !== agentModelFetchGeneration) return;
       elements.modelOptions.replaceChildren(...asArray(result.models).map((model) => {
@@ -1252,18 +1282,48 @@ async function fetchAgentModels(force = false) {
     } catch (error) {
       if (generation === agentModelFetchGeneration) {
         agentModelFetchKey = "";
-        if (elements.modelStatus) elements.modelStatus.textContent = error.message || "模型列表获取失败，可手动填写";
+        if (elements.modelStatus) elements.modelStatus.textContent = error.message === "请求已取消"
+          ? "模型列表请求已取消"
+          : error.message || "模型列表获取失败，可手动填写";
       }
     } finally {
-      if (generation === agentModelFetchGeneration) elements.modelRefresh?.classList.remove("is-loading");
-      agentModelFetchPromise = null;
+      if (generation === agentModelFetchGeneration) {
+        agentModelRequestId = "";
+        elements.modelRefresh?.classList.remove("is-loading");
+        elements.modelRefresh?.setAttribute("title", "刷新模型列表");
+        elements.modelRefresh?.setAttribute("aria-label", "刷新模型列表");
+        agentModelFetchPromise = null;
+      }
     }
   })();
   return agentModelFetchPromise;
 }
 
+function cancelAgentModelFetch() {
+  if (!agentModelRequestId) return false;
+  api.cancelAgentRequest?.(agentModelRequestId);
+  agentModelRequestId = "";
+  agentModelFetchGeneration += 1;
+  agentModelFetchPromise = null;
+  const elements = agentFormElements();
+  if (elements.modelStatus) elements.modelStatus.textContent = "模型列表请求已取消";
+  elements.modelRefresh?.classList.remove("is-loading");
+  elements.modelRefresh?.setAttribute("title", "刷新模型列表");
+  elements.modelRefresh?.setAttribute("aria-label", "刷新模型列表");
+  return true;
+}
+
 async function testAgentConnection() {
   const elements = agentFormElements();
+  if (agentConnectionTestRequestId) {
+    api.cancelAgentRequest?.(agentConnectionTestRequestId);
+    agentConnectionTestRequestId = "";
+    if (elements.connectionStatus) elements.connectionStatus.textContent = "连通性请求已取消";
+    elements.connectionTest?.classList.remove("is-loading");
+    elements.connectionTest?.setAttribute("title", "测试连通性");
+    elements.connectionTest?.setAttribute("aria-label", "测试连通性");
+    return;
+  }
   const request = currentAgentModelRequest();
   if (!request.baseUrl) {
     if (elements.connectionStatus) elements.connectionStatus.textContent = "请先填写接口地址";
@@ -1271,16 +1331,29 @@ async function testAgentConnection() {
   }
   if (elements.connectionStatus) elements.connectionStatus.textContent = "测试中…";
   elements.connectionTest?.classList.add("is-loading");
+  elements.connectionTest?.setAttribute("title", "取消连通性请求");
+  elements.connectionTest?.setAttribute("aria-label", "取消连通性请求");
+  let requestId = "";
   try {
-    const result = await invokeApi("testAgentConnection", request);
+    const result = await api.testAgentConnection(request, (id) => {
+      requestId = id;
+      agentConnectionTestRequestId = id;
+    });
     if (!result?.ok) throw new Error(result?.error || "Agent 连通性测试失败");
     if (elements.connectionStatus) elements.connectionStatus.textContent = result.modelsAvailable
       ? `连接正常 · ${result.modelCount} 个模型`
       : "连接正常 · 未返回模型";
   } catch (error) {
-    if (elements.connectionStatus) elements.connectionStatus.textContent = error.message || "Agent 连通性测试失败";
+    if (elements.connectionStatus) elements.connectionStatus.textContent = error.message === "请求已取消"
+      ? "连通性请求已取消"
+      : error.message || "Agent 连通性测试失败";
   } finally {
-    elements.connectionTest?.classList.remove("is-loading");
+    if (!requestId || agentConnectionTestRequestId === requestId) {
+      if (agentConnectionTestRequestId === requestId) agentConnectionTestRequestId = "";
+      elements.connectionTest?.classList.remove("is-loading");
+      elements.connectionTest?.setAttribute("title", "测试连通性");
+      elements.connectionTest?.setAttribute("aria-label", "测试连通性");
+    }
   }
 }
 
@@ -1296,6 +1369,7 @@ async function saveAgentConfig(event) {
     agentReasoningEffort: elements.reasoning?.value || "medium",
     agentTemperature: elements.temperature?.value === "" ? null : elements.temperature?.value,
     agentMaxSteps: elements.steps?.value || "0",
+    jevAutoJudgeEnabled: elements.jevAutoJudgeEnabled?.checked === true,
     jevProvider: elements.jevProvider?.value || "typesafe",
     jevBaseUrl: elements.jevBaseUrl?.value.trim() || "",
     jevModel: elements.jevModel?.value.trim() || "jev-latest",
@@ -1833,6 +1907,32 @@ function renderThemePreview(theme) {
   if (opacity) opacity.textContent = `${Math.round(theme.backgroundOpacity * 100)}%`;
   const fileName = $("#theme-background-name");
   if (fileName) fileName.textContent = theme.backgroundImage ? "已上传自定义背景" : "未上传背景图片";
+  renderSettingsSummary();
+}
+
+function renderSettingsSummary() {
+  const settings = appState.settings || {};
+  const enginePath = String(valueOf(settings, ["enginePath", "chromiumPath"], "")).trim();
+  const external = appState.engine.mode === "external" || Boolean(enginePath);
+  const engine = $("#settings-summary-engine");
+  const engineDetail = $("#settings-summary-engine-detail");
+  if (engine) engine.textContent = external ? "外部 Chromium" : "内置 Chromium";
+  if (engineDetail) engineDetail.textContent = external ? "独立窗口运行" : "使用应用自带内核";
+
+  const xray = appState.core?.xray;
+  const singbox = appState.core?.singbox;
+  const configured = xray?.configured && singbox?.configured ? "双核心就绪" : xray?.configured || singbox?.configured ? "部分就绪" : "未配置核心";
+  const core = $("#settings-summary-core");
+  const coreDetail = $("#settings-summary-core-detail");
+  if (core) core.textContent = appState.coreUpdates.length ? "有可用更新" : configured;
+  if (coreDetail) coreDetail.textContent = `${String(valueOf(settings, ["defaultCore"], "xray")) === "singbox" ? "sing-box" : "Xray-core"} · 新导入节点默认核心`;
+
+  const theme = normalizeTheme(settings.theme);
+  const themeLabels = { midnight: "深海蓝", ocean: "青花海", ink: "墨蓝灰", custom: "自定义主题" };
+  const themeSummary = $("#settings-summary-theme");
+  const themeDetail = $("#settings-summary-theme-detail");
+  if (themeSummary) themeSummary.textContent = themeLabels[theme.preset] || "自定义主题";
+  if (themeDetail) themeDetail.textContent = theme.backgroundImage ? "含自定义背景 · 实时预览" : "实时预览，保存后生效";
 }
 
 function previewThemeFromForm() {
@@ -1867,6 +1967,180 @@ function renderThemeSettings() {
     if (element && document.activeElement !== element) element.value = String(value);
   }
   renderThemePreview(theme);
+}
+
+function normalizeBookmarkImportSource(source = {}) {
+  const id = String(valueOf(source, ["id"], "")).trim();
+  if (!id) return null;
+  return {
+    id,
+    kind: String(valueOf(source, ["kind"], "manual")),
+    browser: String(valueOf(source, ["browser"], "manual")),
+    profileName: String(valueOf(source, ["profileName"], "")),
+    label: String(valueOf(source, ["label"], id)),
+  };
+}
+
+function renderBookmarkImportResult(result) {
+  const panel = $("#bookmark-import-result");
+  if (!panel) return;
+  if (!result || typeof result !== "object") {
+    panel.hidden = true;
+    panel.innerHTML = "";
+    return;
+  }
+  const sources = asArray(result.sources);
+  const sourceRows = sources.map((source) => {
+    const label = escapeHtml(source.label || source.id || "来源");
+    const details = source.error
+      ? `<span class="bookmark-import-report-error">失败：${escapeHtml(source.error)}</span>`
+      : `新增 ${Number(source.added) || 0} · 重复 ${Number(source.duplicates) || 0} · 无效 ${Number(source.invalid) || 0}`;
+    return `<li><strong>${label}</strong><span>${details}</span></li>`;
+  }).join("");
+  panel.innerHTML = `<div class="bookmark-import-summary"><span>新增链接 <strong>${Number(result.addedLinks) || 0}</strong></span><span>新增文件夹 <strong>${Number(result.addedFolders) || 0}</strong></span><span>重复 <strong>${Number(result.duplicates) || 0}</strong></span><span>无效 <strong>${Number(result.invalid) || 0}</strong></span><span>失败 <strong>${asArray(result.failures).length}</strong></span></div>${sourceRows ? `<ul class="bookmark-import-report-list">${sourceRows}</ul>` : ""}`;
+  panel.hidden = false;
+}
+
+function renderBookmarkImportSettings() {
+  const profileSelect = $("#bookmark-import-profile");
+  const sourceList = $("#bookmark-import-sources");
+  if (!profileSelect || !sourceList) return;
+
+  const profiles = appState.profiles.filter((profile) => profile && profile.id);
+  const profileIds = new Set(profiles.map((profile) => profile.id));
+  if (!profileIds.has(appState.bookmarkImportTargetId)) {
+    appState.bookmarkImportTargetId = profiles[0]?.id || "";
+  }
+  if (document.activeElement !== profileSelect) {
+    profileSelect.innerHTML = profiles.length
+      ? profiles.map((profile) => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name)}</option>`).join("")
+      : `<option value="">请先创建浏览器环境</option>`;
+    profileSelect.value = appState.bookmarkImportTargetId;
+  }
+  profileSelect.disabled = !profiles.length || appState.bookmarkImportLoading || appState.bookmarkImportBusy;
+
+  const sourceMap = new Map(appState.bookmarkImportSources.map((source) => [source.id, source]));
+  appState.bookmarkImportSelectedSourceIds = [...new Set(appState.bookmarkImportSelectedSourceIds.filter((id) => sourceMap.has(id)))];
+  const selected = new Set(appState.bookmarkImportSelectedSourceIds);
+  sourceList.innerHTML = appState.bookmarkImportSources.length
+    ? appState.bookmarkImportSources.map((source) => {
+      const browserLabel = source.browser === "manual" ? "手动文件" : source.browser;
+      const meta = [browserLabel, source.profileName].filter(Boolean).join(" · ");
+      return `<label class="bookmark-import-source"><input type="checkbox" value="${escapeHtml(source.id)}" data-bookmark-import-source${selected.has(source.id) ? " checked" : ""}${appState.bookmarkImportLoading || appState.bookmarkImportBusy ? " disabled" : ""} /><span class="bookmark-import-source-copy"><strong>${escapeHtml(source.label)}</strong><small>${escapeHtml(meta)}</small></span></label>`;
+    }).join("")
+    : "";
+
+  const count = $("#bookmark-import-source-count");
+  if (count) count.textContent = appState.bookmarkImportSources.length ? `${appState.bookmarkImportSources.length} 个可用来源` : "暂无来源";
+  const empty = $("#bookmark-import-source-empty");
+  if (empty) empty.hidden = appState.bookmarkImportSources.length > 0;
+  const sourceError = $("#bookmark-import-source-error");
+  if (sourceError) {
+    sourceError.textContent = appState.bookmarkImportSourceError;
+    sourceError.hidden = !appState.bookmarkImportSourceError;
+  }
+  const profileHint = $("#bookmark-import-profile-hint");
+  if (profileHint) profileHint.textContent = profiles.length ? "收藏将写入选中的环境。" : "请先在环境页创建浏览器环境。";
+
+  const refresh = $("#bookmark-import-refresh");
+  const choose = $("#bookmark-import-files");
+  const submit = $("#bookmark-import-submit");
+  const controlsBusy = appState.bookmarkImportLoading || appState.bookmarkImportBusy;
+  if (refresh) refresh.disabled = controlsBusy;
+  if (choose) choose.disabled = controlsBusy;
+  if (submit) submit.disabled = controlsBusy || !profiles.length || selected.size === 0;
+
+  const status = $("#bookmark-import-status");
+  if (status) {
+    const statusText = appState.bookmarkImportBusy
+      ? "导入中"
+      : appState.bookmarkImportLoading
+        ? "读取来源"
+        : appState.bookmarkImportSourceError
+          ? "来源读取失败"
+          : appState.bookmarkImportSources.length
+            ? `已发现 ${appState.bookmarkImportSources.length} 个来源`
+            : "等待选择来源";
+    status.textContent = statusText;
+    status.className = `status-badge ${appState.bookmarkImportBusy || appState.bookmarkImportLoading ? "status-badge--warn" : appState.bookmarkImportSourceError ? "status-badge--error" : appState.bookmarkImportSources.length ? "status-badge--ready" : ""}`;
+  }
+  renderBookmarkImportResult(appState.bookmarkImportResult);
+}
+
+async function refreshBookmarkImportSources() {
+  const requestId = ++bookmarkImportSourceRequestId;
+  appState.bookmarkImportLoading = true;
+  appState.bookmarkImportSourceError = "";
+  renderBookmarkImportSettings();
+  try {
+    const result = await invokeApi("getBookmarkImportSources");
+    if (requestId !== bookmarkImportSourceRequestId) return;
+    appState.bookmarkImportSources = asArray(result?.sources).map(normalizeBookmarkImportSource).filter(Boolean);
+    appState.bookmarkImportSelectedSourceIds = appState.bookmarkImportSelectedSourceIds.filter((id) => appState.bookmarkImportSources.some((source) => source.id === id));
+  } catch (error) {
+    if (requestId !== bookmarkImportSourceRequestId) return;
+    appState.bookmarkImportSourceError = error.message || "读取书签来源失败";
+  } finally {
+    if (requestId === bookmarkImportSourceRequestId) {
+      appState.bookmarkImportLoading = false;
+      renderBookmarkImportSettings();
+    }
+  }
+}
+
+async function chooseBookmarkImportFiles() {
+  if (appState.bookmarkImportLoading || appState.bookmarkImportBusy) return;
+  appState.bookmarkImportLoading = true;
+  appState.bookmarkImportSourceError = "";
+  renderBookmarkImportSettings();
+  try {
+    const result = await invokeApi("chooseBookmarkImportFiles");
+    if (!result?.canceled) {
+      const chosen = asArray(result?.sources).map(normalizeBookmarkImportSource).filter(Boolean);
+      const sources = new Map(appState.bookmarkImportSources.map((source) => [source.id, source]));
+      for (const source of chosen) sources.set(source.id, source);
+      appState.bookmarkImportSources = [...sources.values()];
+      appState.bookmarkImportSelectedSourceIds = [...new Set([...appState.bookmarkImportSelectedSourceIds, ...chosen.map((source) => source.id)])];
+      if (chosen.length) showToast(`已添加 ${chosen.length} 个手动书签来源`, "success");
+    }
+  } catch (error) {
+    appState.bookmarkImportSourceError = error.message || "选择书签文件失败";
+    showToast(appState.bookmarkImportSourceError, "error");
+  } finally {
+    appState.bookmarkImportLoading = false;
+    renderBookmarkImportSettings();
+  }
+}
+
+async function importBrowserBookmarks() {
+  if (appState.bookmarkImportBusy) return;
+  const profileId = appState.bookmarkImportTargetId || $("#bookmark-import-profile")?.value || "";
+  const sourceIds = [...new Set(appState.bookmarkImportSelectedSourceIds)];
+  if (!profileId) {
+    showToast("请先创建并选择浏览器环境", "warn");
+    return;
+  }
+  if (!sourceIds.length) {
+    showToast("请至少选择一个书签来源", "warn");
+    return;
+  }
+  appState.bookmarkImportBusy = true;
+  appState.bookmarkImportSourceError = "";
+  renderBookmarkImportSettings();
+  try {
+    const result = await invokeApi("importBrowserBookmarks", { profileId, sourceIds });
+    appState.bookmarkImportResult = result;
+    const failures = asArray(result?.failures).length;
+    const invalid = Number(result?.invalid) || 0;
+    const summary = `书签导入完成：新增 ${Number(result?.addedLinks) || 0} 个链接，重复 ${Number(result?.duplicates) || 0} 个`;
+    showToast(failures || invalid ? `${summary}；${failures ? `失败 ${failures} 个来源` : ""}${failures && invalid ? "，" : ""}${invalid ? `无效 ${invalid} 个` : ""}` : summary, failures ? "warn" : "success");
+  } catch (error) {
+    appState.bookmarkImportSourceError = error.message || "书签导入失败";
+    showToast(appState.bookmarkImportSourceError, "error");
+  } finally {
+    appState.bookmarkImportBusy = false;
+    renderBookmarkImportSettings();
+  }
 }
 
 function renderSettings() {
@@ -1922,6 +2196,7 @@ function renderSettings() {
     coreLabel.classList.toggle("status-badge--ready", appState.coreUpdates.length === 0 && configuredLabel !== "未配置");
   }
   renderThemeSettings();
+  renderBookmarkImportSettings();
 }
 
 function renderAll() {
@@ -1955,6 +2230,7 @@ function activateView(view) {
   });
   renderAll();
   if (view === "extensions") void autoCheckExtensionUpdates();
+  if (view === "settings") void refreshBookmarkImportSources();
 }
 
 function openModal(id) {
@@ -2296,6 +2572,22 @@ function extensionStoreSourceLabel(source = appState.extensionStore.source) {
   return source === "official" ? "Chrome Web Store" : "CRX Soso";
 }
 
+function chromeWebStoreDetailUrl(extensionId) {
+  const id = String(extensionId || "").trim().toLowerCase();
+  return /^[a-p]{32}$/.test(id) ? `https://chromewebstore.google.com/detail/${id}` : "";
+}
+
+function chromeWebStoreSearchUrl(keyword) {
+  const value = String(keyword || "").trim().slice(0, 160);
+  return value ? `https://chromewebstore.google.com/search/${encodeURIComponent(value)}` : "https://chromewebstore.google.com/";
+}
+
+function renderExtensionStoreOfficialLink() {
+  const link = $("#extension-store-official-link");
+  if (!link) return;
+  link.href = chromeWebStoreSearchUrl(appState.extensionStore.keyword);
+}
+
 function extensionStoreProxyNodes() {
   return appState.nodes.filter((node) => (
     node.id
@@ -2485,6 +2777,8 @@ function selectExtensionStoreProxyNode(nodeId) {
 
 function extensionStoreImageAllowed(value) {
   const raw = String(value || "");
+  if (raw.length > 800000) return "";
+  if (/^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/]+={0,2}$/i.test(raw)) return raw;
   if (appState.extensionStore.source !== "official") return extensionStoreImageUrl(raw);
   try {
     const url = new URL(raw);
@@ -2541,6 +2835,7 @@ function renderExtensionStoreResults() {
   renderExtensionStoreSourceTabs();
   renderExtensionStoreFilters();
   renderExtensionStoreViewToggle();
+  renderExtensionStoreOfficialLink();
   if (state.loading && !state.results.length) {
     list.innerHTML = `<div class="extension-store-empty">正在搜索 ${escapeHtml(extensionStoreSourceLabel())}…</div>`;
     return;
@@ -2551,6 +2846,7 @@ function renderExtensionStoreResults() {
   }
   list.innerHTML = state.results.map((item) => {
     const image = extensionStoreImageAllowed(item.imageAddon || item.image);
+    const officialUrl = chromeWebStoreDetailUrl(item.id);
     const rating = item.averageRating ? String(item.averageRating) : "暂无评分";
     const installs = extensionStoreCount(item.activeInstallCount);
     return `<article class="extension-store-card" role="button" tabindex="0" data-action="open-extension-store-detail" data-id="${escapeHtml(item.id)}">
@@ -2558,7 +2854,7 @@ function renderExtensionStoreResults() {
       <div class="extension-store-card-heading"><div class="extension-store-card-copy"><strong>${escapeHtml(item.name)}</strong></div></div>
       <div class="extension-store-card-badges"><span class="store-badge store-badge--chrome"><span class="store-platform-mark store-platform-mark--chrome">C</span> ${escapeHtml(extensionStoreSourceLabel())}</span><span class="store-badge">${escapeHtml(item.category || "扩展程序")}</span></div>
       <p>${escapeHtml(item.description || "暂无简介")}</p>
-      <div class="extension-store-card-meta"><span class="store-rating"><svg class="svg-icon" aria-hidden="true"><use href="#icon-star"></use></svg>${escapeHtml(rating)}</span>${installs ? `<span class="store-installs"><svg class="svg-icon" aria-hidden="true"><use href="#icon-download"></use></svg>${escapeHtml(installs)}+</span>` : ""}<span class="extension-store-card-action">查看详情 ${icon("arrow-right")}</span></div>
+      <div class="extension-store-card-meta"><span class="store-rating"><svg class="svg-icon" aria-hidden="true"><use href="#icon-star"></use></svg>${escapeHtml(rating)}</span>${installs ? `<span class="store-installs"><svg class="svg-icon" aria-hidden="true"><use href="#icon-download"></use></svg>${escapeHtml(installs)}+</span>` : ""}<span class="extension-store-card-action">查看详情 ${icon("arrow-right")}</span>${officialUrl ? `<a class="extension-store-card-official-link" href="${escapeHtml(officialUrl)}" target="_blank" rel="noreferrer noopener" title="在 Chrome Web Store 打开">Chrome Web Store ${icon("link")}</a>` : ""}</div>
     </article>`;
   }).join("");
   if (state.hasMorePages) list.insertAdjacentHTML("beforeend", `<button class="button button--secondary extension-store-more" type="button" data-action="load-more-extension-store">加载更多</button>`);
@@ -2574,6 +2870,7 @@ function renderExtensionStoreDetail() {
     return;
   }
   const image = extensionStoreImageAllowed(detail.image);
+  const officialUrl = chromeWebStoreDetailUrl(detail.id);
   const stats = [
     detail.version ? ["版本", detail.version] : null,
     detail.manifestVersion ? ["Manifest", `V${detail.manifestVersion}`] : null,
@@ -2588,7 +2885,7 @@ function renderExtensionStoreDetail() {
     <p class="field-hint">来源：${escapeHtml(extensionStoreSourceLabel())}。实际安装包下载后仍会校验扩展 ID、清单和版本。</p>
     <div class="field-divider"><span>激活环境</span></div>
     <div class="extension-profile-options" id="extension-store-detail-profile-options"></div><p class="field-hint" id="extension-store-detail-profile-empty" hidden>还没有浏览器环境</p>
-    <div class="extension-store-detail-actions">${detail.officialUrl ? `<a class="button button--secondary" href="${escapeHtml(detail.officialUrl)}" target="_blank" rel="noreferrer">打开官方页面</a>` : ""}<button class="button button--primary" type="button" data-action="${appState.extensionStore.source === "official" ? "install-official" : "install-crxsoso"}" data-id="${escapeHtml(detail.id)}"><svg class="svg-icon" aria-hidden="true"><use href="#icon-download"></use></svg> 下载并安装</button></div>`;
+    <div class="extension-store-detail-actions">${officialUrl ? `<a class="button button--secondary" href="${escapeHtml(officialUrl)}" target="_blank" rel="noreferrer noopener"><svg class="svg-icon" aria-hidden="true"><use href="#icon-link"></use></svg> 打开 Chrome Web Store</a>` : ""}<button class="button button--primary" type="button" data-action="${appState.extensionStore.source === "official" ? "install-official" : "install-crxsoso"}" data-id="${escapeHtml(detail.id)}"><svg class="svg-icon" aria-hidden="true"><use href="#icon-download"></use></svg> 下载并安装</button></div>`;
   renderExtensionProfileOptions([], "extension-store-detail-profile-options", "extension-store-detail-profile-empty");
 }
 
@@ -3853,6 +4150,22 @@ function attachDomEvents() {
     if (field && !field.matches(":hover")) concealPasswordField(field);
   });
   document.addEventListener("change", (event) => {
+    const bookmarkImportProfile = event.target.closest("#bookmark-import-profile");
+    if (bookmarkImportProfile) {
+      appState.bookmarkImportTargetId = String(bookmarkImportProfile.value || "");
+      renderBookmarkImportSettings();
+      return;
+    }
+    const bookmarkImportSource = event.target.closest("[data-bookmark-import-source]");
+    if (bookmarkImportSource) {
+      const sourceId = String(bookmarkImportSource.value || "");
+      const selected = new Set(appState.bookmarkImportSelectedSourceIds);
+      if (bookmarkImportSource.checked) selected.add(sourceId);
+      else selected.delete(sourceId);
+      appState.bookmarkImportSelectedSourceIds = [...selected];
+      renderBookmarkImportSettings();
+      return;
+    }
     const select = event.target.closest("[data-profile-switch]");
     if (select) void switchProfileNode(select.dataset.profileSwitch, select.value);
     const coreSelect = event.target.closest("[data-node-core]");
@@ -4000,6 +4313,7 @@ function attachDomEvents() {
       if (viewButton.dataset.viewTarget === "agent") void openAgentConfig();
       return;
     }
+    if (event.target.closest("a[href]")) return;
     const actionButton = event.target.closest("[data-action]");
     if (actionButton) {
       event.preventDefault();
@@ -4027,6 +4341,7 @@ function attachDomEvents() {
       return;
     }
     if (event.key !== "Enter") return;
+    if (event.target.closest?.("a[href]")) return;
     const storeCard = event.target.closest?.('[data-action="open-extension-store-detail"]');
     if (!storeCard) return;
     event.preventDefault();
@@ -4061,7 +4376,9 @@ function attachDomEvents() {
   $("#password-entry-form")?.addEventListener("submit", (event) => void savePasswordEntry(event));
   $("#agent-form")?.addEventListener("submit", (event) => void saveAgentConfig(event));
   $("#test-agent-connection")?.addEventListener("click", () => void testAgentConnection());
-  $("#manager-agent-model-refresh")?.addEventListener("click", () => void fetchAgentModels(true));
+  $("#manager-agent-model-refresh")?.addEventListener("click", () => {
+    if (!cancelAgentModelFetch()) void fetchAgentModels(true);
+  });
   $("#manager-agent-model")?.addEventListener("focus", () => void fetchAgentModels());
   $("#manager-agent-protocol")?.addEventListener("change", () => {
     agentModelFetchKey = "";
@@ -4079,6 +4396,9 @@ function attachDomEvents() {
   $("#choose-extension")?.addEventListener("click", () => void chooseExtension());
   $("#choose-unpacked-extension")?.addEventListener("click", () => void chooseUnpackedExtension());
   $("#save-settings")?.addEventListener("click", () => void saveSettings());
+  $("#bookmark-import-refresh")?.addEventListener("click", () => void refreshBookmarkImportSources());
+  $("#bookmark-import-files")?.addEventListener("click", () => void chooseBookmarkImportFiles());
+  $("#bookmark-import-submit")?.addEventListener("click", () => void importBrowserBookmarks());
   $("#manager-agent-token-clear")?.addEventListener("click", () => {
     clearManagerAgentToken = true;
     const elements = agentFormElements();

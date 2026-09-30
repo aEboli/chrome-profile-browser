@@ -38,10 +38,19 @@ const {
   normalizeBookmarks,
   updateBookmarkRecord,
 } = require('./bookmarks');
+const {
+  createManualBookmarkSource,
+  discoverBookmarkSources,
+  mergeBookmarkSources,
+  publicBookmarkSource,
+  readBookmarkSource,
+} = require('./browser-bookmark-import');
 
 const {
   createStore,
   normalizeNewTabBanner,
+  normalizeNewTabBackgroundBlur,
+  normalizeNewTabBackgroundOpacity,
   normalizeNewTabDisplayMode,
   normalizeNewTabSites,
   normalizeSearchEngines,
@@ -92,6 +101,7 @@ const {
 } = require('./extension-store');
 const {
   getOfficialExtensionStoreDetail,
+  isOfficialStoreUrl,
   searchOfficialExtensionStore,
 } = require('./official-extension-store');
 const {
@@ -120,7 +130,7 @@ const {
   DEFAULT_AGENT_SETTINGS,
   REASONING_EFFORTS: AGENT_REASONING_EFFORTS,
   PROTOCOLS: AGENT_PROTOCOLS,
-  TOOL_DEFINITIONS: AGENT_TOOL_DEFINITIONS,
+  agentToolsForJev,
   authHeaders: agentAuthHeaders,
   buildAgentRequest,
   extractErrorMessage: extractAgentErrorMessage,
@@ -132,6 +142,7 @@ const {
   reasoningEffortFallbacks,
   trimAgentMessages,
 } = require('./agent-protocols');
+const { createAgentRequestRegistry } = require('./agent-request-lifecycle');
 const {
   DEFAULT_JEV_SETTINGS,
   PROVIDERS: JEV_PROVIDERS,
@@ -188,6 +199,9 @@ const profileSessionHandlers = new WeakSet();
 const profileDownloadRecords = new Map();
 const profileDownloadItems = new Map();
 const profileAgentFileGrants = new Map();
+const bookmarkImportSources = new Map();
+const agentRequestRegistry = createAgentRequestRegistry();
+const agentRequests = agentRequestRegistry.requests;
 const extensionUpdateRuns = new Map();
 const retiredExtensionRoots = new Map();
 const connectionCheckRuns = new Map();
@@ -235,9 +249,6 @@ const MAX_AGENT_SUFFIX_LENGTH = 256;
 const MAX_AGENT_KEY_LENGTH = 4096;
 const MAX_AGENT_MODEL_LENGTH = 256;
 const MAX_JEV_MODEL_LENGTH = 256;
-const MAX_AGENT_MESSAGE_COUNT = 256;
-const MAX_AGENT_REQUEST_BYTES = 8 * 1024 * 1024;
-const AGENT_REQUEST_TIMEOUT_MS = 120000;
 const MAX_BOOKMARK_FAVICON_BYTES = 64 * 1024;
 const SECRET_CORE_KEYS = new Set(['uuid', 'password', 'publicKey', 'shortId', 'spiderX']);
 const COUNTRY_NAMES = Object.freeze({
@@ -1327,6 +1338,7 @@ function resolvedJevSettings(state, profileId = '') {
   const source = resolvedAgentSettings(state, profileId);
   const provider = normalizeJevProvider(source.jevProvider || DEFAULT_JEV_SETTINGS.provider);
   return {
+    autoJudgeEnabled: source.jevAutoJudgeEnabled !== false,
     provider,
     baseUrl: safeText(source.jevBaseUrl) || (provider === 'typesafe' ? DEFAULT_JEV_SETTINGS.baseUrl : ''),
     model: safeText(source.jevModel) || DEFAULT_JEV_SETTINGS.model,
@@ -1411,6 +1423,7 @@ function publicBrowserSettings(state, profileId = '') {
     jevProvider: normalizeJevProvider(resolved.jevProvider || DEFAULT_JEV_SETTINGS.provider),
     jevBaseUrl: safeText(resolved.jevBaseUrl) || (normalizeJevProvider(resolved.jevProvider || DEFAULT_JEV_SETTINGS.provider) === 'typesafe' ? DEFAULT_JEV_SETTINGS.baseUrl : ''),
     jevModel: safeText(resolved.jevModel) || DEFAULT_JEV_SETTINGS.model,
+    jevAutoJudgeEnabled: resolved.jevAutoJudgeEnabled !== false,
     jevKeySet: Boolean(resolvedJevToken),
     jevProviders: JEV_PROVIDERS.map(({ id, label, defaultBaseUrl }) => ({ id, label, defaultBaseUrl })),
     searchEngineUrl: settings.searchEngineUrl,
@@ -1419,6 +1432,14 @@ function publicBrowserSettings(state, profileId = '') {
     newTabSites: normalizeNewTabSites(settings.newTabSites),
     newTabBanner: normalizeNewTabBanner(settings.newTabBanner),
     newTabDisplayMode: normalizeNewTabDisplayMode(settings.newTabDisplayMode),
+    newTabBackgroundOpacity: normalizeNewTabBackgroundOpacity(
+      settings.newTabBackgroundOpacity,
+      settings.theme?.backgroundOpacity,
+    ),
+    newTabBackgroundBlur: normalizeNewTabBackgroundBlur(
+      settings.newTabBackgroundBlur,
+      settings.theme?.blur,
+    ),
     theme: settings.theme,
     browserShortcuts: normalizedBrowserShortcuts(settings.browserShortcuts),
     mouseGesture: normalizedMouseGesture(settings.mouseGesture),
@@ -1495,6 +1516,9 @@ async function prepareBrowserSettings(input, currentSettings, sender) {
   if (settings.jevProvider !== undefined) {
     patch.jevProvider = normalizeJevProvider(boundedSettingText(settings.jevProvider, MAX_AGENT_API_LENGTH, 'JEV 提供方'));
   }
+  if (settings.jevAutoJudgeEnabled !== undefined) {
+    patch.jevAutoJudgeEnabled = settings.jevAutoJudgeEnabled === true;
+  }
   if (settings.jevBaseUrl !== undefined) {
     const jevProvider = normalizeJevProvider(settings.jevProvider || current.jevProvider || DEFAULT_JEV_SETTINGS.provider);
     patch.jevBaseUrl = normalizeJevBaseUrl(
@@ -1523,6 +1547,19 @@ async function prepareBrowserSettings(input, currentSettings, sender) {
   }
   if (settings.newTabDisplayMode !== undefined) {
     patch.newTabDisplayMode = normalizeNewTabDisplayMode(settings.newTabDisplayMode, normalizeNewTabDisplayMode(current.newTabDisplayMode));
+  }
+  if (settings.newTabBackgroundOpacity !== undefined) {
+    const currentTheme = normalizeTheme(current.theme);
+    const currentOpacity = normalizeNewTabBackgroundOpacity(
+      current.newTabBackgroundOpacity,
+      currentTheme.backgroundOpacity,
+    );
+    patch.newTabBackgroundOpacity = normalizeNewTabBackgroundOpacity(settings.newTabBackgroundOpacity, currentOpacity);
+  }
+  if (settings.newTabBackgroundBlur !== undefined) {
+    const currentTheme = normalizeTheme(current.theme);
+    const currentBlur = normalizeNewTabBackgroundBlur(current.newTabBackgroundBlur, currentTheme.blur);
+    patch.newTabBackgroundBlur = normalizeNewTabBackgroundBlur(settings.newTabBackgroundBlur, currentBlur);
   }
   if (settings.browserShortcuts !== undefined) {
     const source = settings.browserShortcuts && typeof settings.browserShortcuts === 'object' ? settings.browserShortcuts : {};
@@ -1959,8 +1996,20 @@ function profileIdForSender(sender) {
 
 function scriptJson(value) {
   const encoded = JSON.stringify(value === undefined ? null : value);
-  if (encoded === undefined || encoded.length > 512000) throw new Error('网页助手动作数据过大');
+  if (encoded === undefined) throw new Error('网页助手动作数据无效');
   return encoded.replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
+function agentRequestKey(sender, requestId) {
+  return agentRequestRegistry.key(sender, requestId);
+}
+
+async function runAgentRequest(sender, requestId, operation, onCancel) {
+  return agentRequestRegistry.run(sender, requestId, operation, onCancel);
+}
+
+function cancelAgentRequestForSender(sender, requestId) {
+  return agentRequestRegistry.cancel(sender, requestId);
 }
 
 async function invokeBrowserAgent(webContents, method, payload) {
@@ -2003,6 +2052,7 @@ function storedAgentConnection(profileId = '') {
     maxSteps: Number.isSafeInteger(Number(settings.agentMaxSteps)) && Number(settings.agentMaxSteps) >= 0
       ? Number(settings.agentMaxSteps) : DEFAULT_AGENT_SETTINGS.maxSteps,
     reasoningEffort: safeAgentReasoningEffort(settings.agentReasoningEffort),
+    jevAutoJudgeEnabled: settings.jevAutoJudgeEnabled !== false,
   };
 }
 
@@ -2011,9 +2061,7 @@ function storedJevConnection(profileId = '') {
 }
 
 async function readAgentResponseBody(response) {
-  const text = await response.text();
-  if (Buffer.byteLength(text, 'utf8') > MAX_AGENT_REQUEST_BYTES) throw new Error('Agent 响应超过 8MB 限制');
-  return text;
+  return response.text();
 }
 
 function parseAgentModels(protocol, payload) {
@@ -2034,12 +2082,11 @@ function parseAgentModels(protocol, payload) {
     if (!id || seen.has(id)) continue;
     seen.add(id);
     models.push({ id, label: safeText(source.displayName || source.name || id) });
-    if (models.length >= 500) break;
   }
   return models;
 }
 
-async function requestAgentModels(profileId, input, { testOnly = false } = {}) {
+async function requestAgentModels(profileId, input, { testOnly = false, cancelSignal } = {}) {
   const state = store?.get?.() || {};
   const resolved = resolvedAgentSettings(state, profileId);
   const payload = input && typeof input === 'object' ? input : {};
@@ -2054,7 +2101,7 @@ async function requestAgentModels(profileId, input, { testOnly = false } = {}) {
   if (!token) throw new Error('请先保存 Agent Token');
   const url = agentModelsEndpointFor(protocol, baseUrl);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), AGENT_REQUEST_TIMEOUT_MS);
+  const unbindCancel = bindAgentAbortSignal(controller, cancelSignal);
   try {
     const response = await fetch(url, {
       method: 'GET',
@@ -2077,10 +2124,10 @@ async function requestAgentModels(profileId, input, { testOnly = false } = {}) {
       ? { ok: true, protocol, modelCount: models.length, modelsAvailable: models.length > 0 }
       : { ok: true, protocol, models };
   } catch (error) {
-    if (error?.name === 'AbortError') throw new Error('Agent 模型接口请求超时');
+    if (error?.name === 'AbortError' && cancelSignal?.aborted) throw new Error('请求已取消');
     throw error;
   } finally {
-    clearTimeout(timer);
+    unbindCancel();
   }
 }
 
@@ -2090,7 +2137,7 @@ function isUnsupportedReasoningEffortError(error) {
     && /(unsupported|not support|invalid|unknown|unrecognized|must be one|valid values|not available|不支持|无效)/i.test(text);
 }
 
-async function requestAgentModel(profileId, input) {
+async function requestAgentModel(profileId, input, cancelSignal) {
   const connection = storedAgentConnection(profileId);
   if (!connection.enabled) throw new Error('当前环境未启用 Agent，请在插件管理中激活网页助手');
   if (!connection.baseUrl) throw new Error('请先在 Agent 设置中填写接口地址');
@@ -2098,7 +2145,6 @@ async function requestAgentModel(profileId, input) {
   if (!connection.token) throw new Error('请先在 Agent 设置中保存 Token');
   const messages = Array.isArray(input?.messages) ? input.messages : [];
   if (!messages.length) throw new Error('Agent 对话内容不能为空');
-  if (messages.length > MAX_AGENT_MESSAGE_COUNT) throw new Error(`Agent 对话最多保留 ${MAX_AGENT_MESSAGE_COUNT} 条消息`);
   const trimmed = trimAgentMessages(messages, connection.contextBudgetTokens);
   const efforts = connection.protocol.startsWith('openai-')
     ? reasoningEffortFallbacks(connection.reasoningEffort)
@@ -2109,12 +2155,11 @@ async function requestAgentModel(profileId, input) {
       ...connection,
       reasoningEffort,
       messages: trimmed,
-      tools: input?.finalize === true ? [] : AGENT_TOOL_DEFINITIONS,
+      tools: input?.finalize === true ? [] : agentToolsForJev(connection.jevAutoJudgeEnabled),
     });
     const body = JSON.stringify(request.body);
-    if (Buffer.byteLength(body, 'utf8') > MAX_AGENT_REQUEST_BYTES) throw new Error('Agent 请求超过 8MB 限制，请降低上下文预算');
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), AGENT_REQUEST_TIMEOUT_MS);
+    const unbindCancel = bindAgentAbortSignal(controller, cancelSignal);
     try {
       const response = await fetch(request.url, {
         method: 'POST',
@@ -2146,14 +2191,14 @@ async function requestAgentModel(profileId, input) {
         ...parseAgentResponse(request.protocol, payload),
       };
     } catch (error) {
-      if (error?.name === 'AbortError') throw new Error('Agent 请求超时');
+      if (error?.name === 'AbortError' && cancelSignal?.aborted) throw error;
       if (efforts.length > 1 && isUnsupportedReasoningEffortError(error)) {
         lastReasoningError = error;
         continue;
       }
       throw error;
     } finally {
-      clearTimeout(timer);
+      unbindCancel();
     }
   }
   throw lastReasoningError || new Error('Agent 思考等级不受当前模型支持');
@@ -2265,7 +2310,6 @@ async function consumeAgentStream(response, protocol, onEvent) {
   const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
   if (!response.body || typeof response.body.getReader !== 'function' || !contentType.includes('text/event-stream')) {
     const text = await response.text();
-    if (Buffer.byteLength(text, 'utf8') > MAX_AGENT_REQUEST_BYTES) throw new Error('Agent 响应超过 8MB 限制');
     const parsed = parseAgentResponse(kind, text || '{}');
     if (parsed.text) emitText(parsed.text);
     return parsed;
@@ -2276,7 +2320,6 @@ async function consumeAgentStream(response, protocol, onEvent) {
   let buffer = '';
   let eventName = '';
   let eventData = [];
-  let receivedBytes = 0;
   const flushEvent = () => {
     if (eventData.length) processEvent(eventName, eventData.join('\n'));
     eventName = '';
@@ -2285,8 +2328,6 @@ async function consumeAgentStream(response, protocol, onEvent) {
   while (true) {
     const chunk = await reader.read();
     if (chunk.done) break;
-    receivedBytes += chunk.value?.byteLength || 0;
-    if (receivedBytes > MAX_AGENT_REQUEST_BYTES) throw new Error('Agent 响应超过 8MB 限制');
     buffer += decoder.decode(chunk.value, { stream: true });
     const lines = buffer.split(/\r?\n/);
     buffer = lines.pop() || '';
@@ -2323,7 +2364,15 @@ async function consumeAgentStream(response, protocol, onEvent) {
   return state;
 }
 
-async function requestAgentModelStream(profileId, input, onEvent) {
+function bindAgentAbortSignal(controller, signal) {
+  if (!signal) return () => {};
+  const abort = () => controller.abort();
+  if (signal.aborted) abort();
+  else signal.addEventListener('abort', abort, { once: true });
+  return () => signal.removeEventListener('abort', abort);
+}
+
+async function requestAgentModelStream(profileId, input, onEvent, cancelSignal) {
   const connection = storedAgentConnection(profileId);
   if (!connection.enabled) throw new Error('当前环境未启用 Agent，请在插件管理中激活网页助手');
   if (!connection.baseUrl) throw new Error('请先在 Agent 设置中填写接口地址');
@@ -2331,7 +2380,6 @@ async function requestAgentModelStream(profileId, input, onEvent) {
   if (!connection.token) throw new Error('请先在 Agent 设置中保存 Token');
   const messages = Array.isArray(input?.messages) ? input.messages : [];
   if (!messages.length) throw new Error('Agent 对话内容不能为空');
-  if (messages.length > MAX_AGENT_MESSAGE_COUNT) throw new Error(`Agent 对话最多保留 ${MAX_AGENT_MESSAGE_COUNT} 条消息`);
   const trimmed = trimAgentMessages(messages, connection.contextBudgetTokens);
   const efforts = connection.protocol.startsWith('openai-')
     ? reasoningEffortFallbacks(connection.reasoningEffort)
@@ -2342,13 +2390,12 @@ async function requestAgentModelStream(profileId, input, onEvent) {
       ...connection,
       reasoningEffort,
       messages: trimmed,
-      tools: input?.finalize === true ? [] : AGENT_TOOL_DEFINITIONS,
+      tools: input?.finalize === true ? [] : agentToolsForJev(connection.jevAutoJudgeEnabled),
       stream: true,
     });
     const body = JSON.stringify(request.body);
-    if (Buffer.byteLength(body, 'utf8') > MAX_AGENT_REQUEST_BYTES) throw new Error('Agent 请求超过 8MB 限制，请降低上下文预算');
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), AGENT_REQUEST_TIMEOUT_MS);
+    const unbindCancel = bindAgentAbortSignal(controller, cancelSignal);
     try {
       const response = await fetch(request.url, { method: 'POST', headers: request.headers, body, signal: controller.signal });
       if (!response.ok) {
@@ -2366,21 +2413,22 @@ async function requestAgentModelStream(profileId, input, onEvent) {
       const parsed = await consumeAgentStream(response, request.protocol, onEvent);
       return { ok: true, protocol: request.protocol, model: connection.model, reasoningEffort: request.reasoningEffort, ...parsed };
     } catch (error) {
-      if (error?.name === 'AbortError') throw new Error('Agent 请求超时');
+      if (error?.name === 'AbortError' && cancelSignal?.aborted) throw error;
       if (efforts.length > 1 && isUnsupportedReasoningEffortError(error)) {
         lastReasoningError = error;
         continue;
       }
       throw error;
     } finally {
-      clearTimeout(timer);
+      unbindCancel();
     }
   }
   throw lastReasoningError || new Error('Agent 思考等级不受当前模型支持');
 }
 
-async function requestJevDecision(profileId, input) {
+async function requestJevDecision(profileId, input, cancelSignal) {
   const connection = storedJevConnection(profileId);
+  if (!connection.autoJudgeEnabled) throw new Error('请先在 Agent 配置中启用 JEV 模型');
   if (!connection.token) throw new Error('请先在 Agent 配置中保存 JEV Key');
   const request = buildJevRequest({
     ...connection,
@@ -2388,9 +2436,8 @@ async function requestJevDecision(profileId, input) {
     questions: input?.questions,
   });
   const body = JSON.stringify(request.body);
-  if (Buffer.byteLength(body, 'utf8') > MAX_AGENT_REQUEST_BYTES) throw new Error('JEV 请求超过 8MB 限制');
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), AGENT_REQUEST_TIMEOUT_MS);
+  const unbindCancel = bindAgentAbortSignal(controller, cancelSignal);
   try {
     const response = await fetch(request.url, {
       method: 'POST',
@@ -2411,10 +2458,10 @@ async function requestJevDecision(profileId, input) {
     }
     return { ok: true, provider: request.provider, ...parseJevResponse(payload) };
   } catch (error) {
-    if (error?.name === 'AbortError') throw new Error('JEV 请求超时');
+    if (error?.name === 'AbortError' && cancelSignal?.aborted) throw error;
     throw error;
   } finally {
-    clearTimeout(timer);
+    unbindCancel();
   }
 }
 
@@ -3679,6 +3726,78 @@ function profileBookmarks(profileId) {
   return normalizeBookmarks(profile?.bookmarks);
 }
 
+function refreshBookmarkImportSourceRegistry() {
+  for (const source of discoverBookmarkSources()) bookmarkImportSources.set(source.id, source);
+  return [...bookmarkImportSources.values()];
+}
+
+function registerBookmarkImportSources(sources) {
+  for (const source of Array.isArray(sources) ? sources : []) {
+    if (source?.id && source?.filePath) bookmarkImportSources.set(source.id, source);
+  }
+}
+
+function publicBookmarkImportSources() {
+  return refreshBookmarkImportSourceRegistry().map(publicBookmarkSource);
+}
+
+function chooseBookmarkImportFiles() {
+  return dialog.showOpenDialog(mainWindow, {
+    title: '选择浏览器书签文件',
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: 'Chromium 书签', extensions: ['json', 'html', 'htm'] },
+      { name: '所有文件', extensions: [''] },
+    ],
+  }).then((result) => {
+    if (result.canceled) return { ok: true, canceled: true, sources: [] };
+    const sources = result.filePaths.map((filePath) => createManualBookmarkSource(filePath));
+    registerBookmarkImportSources(sources);
+    return { ok: true, sources: sources.map(publicBookmarkSource) };
+  });
+}
+
+function importProfileBookmarks(profileId, sourceIds) {
+  const profileKey = safeProfileId(profileId);
+  if (!profileKey) throw new Error('请选择目标环境');
+  const available = refreshBookmarkImportSourceRegistry();
+  const requested = [...new Set((Array.isArray(sourceIds) ? sourceIds : [])
+    .map((item) => safeText(item))
+    .filter(Boolean))];
+  const sources = requested.map((sourceId) => bookmarkImportSources.get(sourceId)).filter(Boolean);
+  if (sources.length !== requested.length) throw new Error('部分书签来源已失效，请刷新来源列表后重试');
+  if (!sources.length) throw new Error('请至少选择一个书签来源');
+
+  const parsedSources = sources.map((source) => {
+    try {
+      return readBookmarkSource(source);
+    } catch (error) {
+      return { source, entries: [], invalidCount: 0, error: error?.message || String(error) };
+    }
+  });
+  let merged;
+  store.update((next) => {
+    const profile = next.profiles.find((item) => item.id === profileKey);
+    if (!profile) throw new Error('目标环境不存在');
+    merged = mergeBookmarkSources(profile.bookmarks, parsedSources);
+    profile.bookmarks = merged.bookmarks;
+  });
+  broadcastState();
+  sendBrowserBookmarks(profileKey);
+  return {
+    profileId: profileKey,
+    added: merged.added,
+    addedLinks: merged.addedLinks,
+    addedFolders: merged.addedFolders,
+    duplicates: merged.duplicates,
+    invalid: merged.invalid,
+    failures: merged.failures,
+    sources: merged.sources,
+    bookmarks: profileBookmarks(profileKey),
+    availableSourceCount: available.length,
+  };
+}
+
 async function fetchBookmarkFavicon(profileSession, url) {
   try {
     const response = await profileSession.fetch(url, {
@@ -3939,9 +4058,52 @@ function sendBrowserSettings(profileId) {
   const win = profileWindows.get(profileId);
   if (!win || win.isDestroyed()) return;
   try {
-    win.webContents.send('browser-shell:settings-updated', publicBrowserSettings(store.get(), profileId));
+    const settings = publicBrowserSettings(store.get(), profileId);
+    updateShellTitleBarOverlay(win, settings.theme);
+    win.webContents.send('browser-shell:settings-updated', settings);
   } catch {
     // The shell may be closing; the next launch will receive current settings.
+  }
+}
+
+function sendBrowserBookmarks(profileId) {
+  const profileKey = safeProfileId(profileId);
+  const win = profileWindows.get(profileKey);
+  if (!profileKey || !win || win.isDestroyed()) return;
+  try {
+    win.webContents.send('browser-shell:bookmarks-updated', {
+      profileId: profileKey,
+      bookmarks: profileBookmarks(profileKey),
+    });
+  } catch {
+    // The shell may be closing; the next launch will query the latest state.
+  }
+}
+
+function shellTitleBarOverlayColor(theme = {}) {
+  const normalized = normalizeTheme(theme);
+  const parse = (value) => {
+    const match = /^#([0-9a-f]{6})$/i.exec(value);
+    if (!match) return null;
+    return [0, 2, 4].map((offset) => Number.parseInt(match[1].slice(offset, offset + 2), 16));
+  };
+  const surface = parse(normalized.surface);
+  const background = parse(normalized.background);
+  if (!surface || !background) return '#111722';
+  const channels = surface.map((channel, index) => Math.round(channel * .9 + background[index] * .1));
+  return `#${channels.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function updateShellTitleBarOverlay(win, theme) {
+  if (!win || win.isDestroyed() || (process.platform !== 'win32' && process.platform !== 'linux')) return;
+  try {
+    win.setTitleBarOverlay?.({
+      color: shellTitleBarOverlayColor(theme),
+      symbolColor: '#92a1b8',
+      height: 42,
+    });
+  } catch {
+    // The window may be closing while settings are being broadcast.
   }
 }
 
@@ -4158,8 +4320,8 @@ function showGuestMediaControls(contents, params = {}) {
   void contents.executeJavaScript(script, true).catch(() => {});
 }
 
-async function showPageQrCode(hostWindow, pageUrl) {
-  const targetUrl = safeText(pageUrl);
+async function showResourceQrCode(hostWindow, value, title = '页面二维码') {
+  const targetUrl = safeText(value);
   if (!targetUrl || !hostWindow || hostWindow.isDestroyed()) return;
   try {
     const image = await QRCode.toDataURL(targetUrl, { errorCorrectionLevel: 'M', margin: 2, width: 280 });
@@ -4170,16 +4332,23 @@ async function showPageQrCode(hostWindow, pageUrl) {
       width: 360,
       height: 420,
       resizable: false,
-      title: '页面二维码',
+      title,
       backgroundColor: '#fff',
       webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
-    const html = `<!doctype html><meta charset="utf-8"><title>页面二维码</title><style>body{margin:0;padding:24px;background:#fff;color:#172033;font-family:Segoe UI,Microsoft YaHei,sans-serif;text-align:center}img{display:block;width:280px;height:280px;margin:0 auto 18px}p{margin:0;word-break:break-all;font-size:12px;line-height:1.5;color:#526078}</style><img src="${image}" alt="页面二维码"><p>${escapedUrl}</p>`;
+    const html = `<!doctype html><meta charset="utf-8"><title>${title}</title><style>body{margin:0;padding:24px;background:#fff;color:#172033;font-family:Segoe UI,Microsoft YaHei,sans-serif;text-align:center}img{display:block;width:280px;height:280px;margin:0 auto 18px}p{margin:0;word-break:break-all;font-size:12px;line-height:1.5;color:#526078}</style><img src="${image}" alt="${title}"><p>${escapedUrl}</p>`;
     await qrWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
     qrWindow.show();
   } catch (error) {
-    console.error(`生成页面二维码失败：${error.message}`);
+    console.error(`生成${title}失败：${error.message}`);
   }
+}
+
+function copyGuestImage(guestContents, params = {}) {
+  const x = Number(params.x);
+  const y = Number(params.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || typeof guestContents?.copyImageAt !== 'function') return;
+  guestContents.copyImageAt(Math.round(x), Math.round(y));
 }
 
 function guestContextMenuTemplate(profileId, hostWindow, guestContents, params = {}) {
@@ -4224,7 +4393,9 @@ function guestContextMenuTemplate(profileId, hostWindow, guestContents, params =
     menu.push(
       { label: '在新标签页中打开图片', click: () => openTab(mediaUrl, true) },
       { label: '图片另存为…', enabled: isAllowedNavigation(mediaUrl), click: () => downloadGuestResource(guestContents, mediaUrl) },
+      { label: '复制图片', click: () => copyGuestImage(guestContents, params) },
       { label: '复制图片地址', click: () => copy(mediaUrl) },
+      { label: '为此图片创建二维码', click: () => void showResourceQrCode(hostWindow, mediaUrl, '图片二维码') },
     );
     addSeparator();
   }
@@ -4258,7 +4429,7 @@ function guestContextMenuTemplate(profileId, hostWindow, guestContents, params =
       { label: '另存为…', enabled: isAllowedNavigation(params.pageURL), click: () => downloadGuestResource(guestContents, params.pageURL) },
       { label: '打印…', click: () => guestContents.print?.({}) },
       { label: '投放…', click: () => guestContents.executeJavaScript?.('navigator.mediaSession?.playbackState || "当前页面暂不支持投放"', true) },
-      { label: '为此页面创建二维码', enabled: Boolean(params.pageURL), click: () => void showPageQrCode(hostWindow, params.pageURL) },
+      { label: '为此页面创建二维码', enabled: Boolean(params.pageURL), click: () => void showResourceQrCode(hostWindow, params.pageURL) },
       { label: '翻译成中文（简体）', enabled: isAllowedNavigation(params.pageURL), click: () => openTab(`https://translate.google.com/translate?sl=auto&tl=zh-CN&u=${encodeURIComponent(params.pageURL)}`, true) },
       { type: 'separator' },
       { role: 'selectAll', label: '全选', click: () => guestContents.selectAll?.() },
@@ -4360,6 +4531,7 @@ function handleGuestInput(contents, input) {
 function createShellWindow(profile, node, displayNode = node) {
   const partition = profilePartition(profile.id);
   const profileSession = session.fromPartition(partition);
+  const shellTheme = normalizeTheme(store.get().settings.theme);
   const win = new BrowserWindow({
     width: 1420,
     height: 920,
@@ -4374,7 +4546,7 @@ function createShellWindow(profile, node, displayNode = node) {
       ? {
         titleBarStyle: 'hidden',
         titleBarOverlay: {
-          color: '#111722',
+          color: shellTitleBarOverlayColor(shellTheme),
           symbolColor: '#92a1b8',
           height: 42,
         },
@@ -5095,7 +5267,7 @@ async function saveApplicationSettings(input, sender) {
 const AGENT_PROFILE_SETTING_KEYS = new Set([
   'agentApiUrl', 'agentProtocolSuffix', 'agentApi', 'agentProtocol', 'agentBaseUrl', 'agentModel',
   'agentContextBudgetTokens', 'agentMaxOutputTokens', 'agentTemperature', 'agentMaxSteps', 'agentReasoningEffort', 'agentKey',
-  'agentToken', 'jevProvider', 'jevBaseUrl', 'jevModel', 'jevKey', 'jevToken',
+  'agentToken', 'jevProvider', 'jevBaseUrl', 'jevModel', 'jevKey', 'jevToken', 'jevAutoJudgeEnabled',
 ]);
 
 async function saveAgentProfileSettings(profileId, input, sender) {
@@ -5828,6 +6000,9 @@ function registerIpc() {
     if (!pending || pending.sender !== event.sender) return;
     pending.finish(payload?.confirmed === true);
   });
+  ipcMain.on('browser-shell:agent-request-cancel', (event, requestId) => {
+    cancelAgentRequestForSender(event.sender, requestId);
+  });
 
   const handle = (channel, handler) => ipcMain.handle(channel, (event, ...args) => {
     if (!mainWindow || event.sender.id !== mainWindow.webContents.id) {
@@ -5848,6 +6023,22 @@ function registerIpc() {
   });
 
   handle('state:get', () => publicState());
+
+  handle('bookmarks:import-sources', () => ({
+    ok: true,
+    sources: publicBookmarkImportSources(),
+  }));
+
+  handle('bookmarks:choose-files', async () => chooseBookmarkImportFiles());
+
+  handle('bookmarks:import', (_event, input) => {
+    try {
+      const payload = input && typeof input === 'object' ? input : {};
+      return publicResult(importProfileBookmarks(payload.profileId, payload.sourceIds));
+    } catch (error) {
+      return errorResult(error);
+    }
+  });
 
   handle('password:save', (_event, input) => {
     try {
@@ -6065,19 +6256,19 @@ function registerIpc() {
     }
   });
 
-  handle('agent:fetch-models', async (_event, payload) => {
+  handle('agent:fetch-models', async (event, payload) => {
     try {
       const input = payload && typeof payload === 'object' ? payload : {};
-      return await requestAgentModels(input.profileId, input);
+      return await runAgentRequest(event.sender, input.requestId, (signal) => requestAgentModels(input.profileId, input, { cancelSignal: signal }));
     } catch (error) {
       return errorResult(error);
     }
   });
 
-  handle('agent:test-connection', async (_event, payload) => {
+  handle('agent:test-connection', async (event, payload) => {
     try {
       const input = payload && typeof payload === 'object' ? payload : {};
-      return await requestAgentModels(input.profileId, input, { testOnly: true });
+      return await runAgentRequest(event.sender, input.requestId, (signal) => requestAgentModels(input.profileId, input, { testOnly: true, cancelSignal: signal }));
     } catch (error) {
       return errorResult(error);
     }
@@ -6432,9 +6623,9 @@ function registerIpc() {
     }
   });
 
-  shellHandle('browser-shell:agent-chat', async (_event, profileId, input) => {
+  shellHandle('browser-shell:agent-chat', async (event, profileId, input) => {
     try {
-      return await requestAgentModel(profileId, input);
+      return await runAgentRequest(event.sender, input?.requestId, (signal) => requestAgentModel(profileId, input, signal));
     } catch (error) {
       return errorResult(error);
     }
@@ -6443,30 +6634,59 @@ function registerIpc() {
   ipcMain.on('browser-shell:agent-chat-stream', (event, requestId, input) => {
     const profileId = profileIdForSender(event.sender);
     const safeRequestId = String(requestId || '').slice(0, 160);
+    const requestKey = agentRequestKey(event.sender, safeRequestId);
+    const controller = new AbortController();
+    let terminalSent = false;
     const send = (payload) => {
       if (!safeRequestId || !event.sender || event.sender.isDestroyed()) return;
+      if (payload?.type && payload.type !== 'delta') {
+        if (terminalSent) return;
+        terminalSent = true;
+      }
       try { event.sender.send('browser-shell:agent-stream', { requestId: safeRequestId, ...payload }); } catch { /* The shell may be closing. */ }
     };
-    if (!profileId) {
+    if (!profileId || !requestKey) {
       send({ type: 'error', error: '未授权的浏览器窗口' });
       return;
     }
-    void requestAgentModelStream(profileId, input, (delta) => send(delta))
-      .then((result) => send({ type: 'done', result }))
-      .catch((error) => send({ type: 'error', error: error?.message || 'Agent 模型请求失败' }));
+    const onDestroyed = () => controller.abort();
+    agentRequests.get(requestKey)?.cancel?.();
+    const requestEntry = {
+      sender: event.sender,
+      controller,
+      cancel: () => {
+        controller.abort();
+        send({ type: 'cancelled', error: 'Agent 已停止' });
+      },
+    };
+    agentRequests.set(requestKey, requestEntry);
+    event.sender.once('destroyed', onDestroyed);
+    void requestAgentModelStream(profileId, input, (delta) => send(delta), controller.signal)
+      .then((result) => {
+        if (controller.signal.aborted) send({ type: 'cancelled', error: 'Agent 已停止' });
+        else send({ type: 'done', result });
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) send({ type: 'cancelled', error: 'Agent 已停止' });
+        else send({ type: 'error', error: error?.message || 'Agent 模型请求失败' });
+      })
+      .finally(() => {
+        event.sender.removeListener('destroyed', onDestroyed);
+        if (agentRequests.get(requestKey) === requestEntry) agentRequests.delete(requestKey);
+      });
   });
 
-  shellHandle('browser-shell:agent-models', async (_event, profileId, input) => {
+  shellHandle('browser-shell:agent-models', async (event, profileId, input) => {
     try {
-      return await requestAgentModels(profileId, input);
+      return await runAgentRequest(event.sender, input?.requestId, (signal) => requestAgentModels(profileId, input, { cancelSignal: signal }));
     } catch (error) {
       return errorResult(error);
     }
   });
 
-  shellHandle('browser-shell:jev-decision', async (_event, profileId, input) => {
+  shellHandle('browser-shell:jev-decision', async (event, profileId, input) => {
     try {
-      return await requestJevDecision(profileId, input);
+      return await runAgentRequest(event.sender, input?.requestId, (signal) => requestJevDecision(profileId, input, signal));
     } catch (error) {
       return errorResult(error);
     }
@@ -6498,12 +6718,13 @@ function registerIpc() {
     }
   });
 
-  shellHandle('browser-shell:open-manager', (_event) => {
+  shellHandle('browser-shell:open-manager', (_event, view) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
       mainWindow.focus();
-      mainWindow.webContents.send('manager:navigate', 'extensions');
+      const targetView = view === 'passwords' ? 'passwords' : 'extensions';
+      mainWindow.webContents.send('manager:navigate', targetView);
     }
     return { ok: true };
   });
@@ -6873,6 +7094,12 @@ function createManagerWindow() {
   });
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAutoHideMenuBar(true);
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isOfficialStoreUrl(url)) {
+      void Promise.resolve().then(() => shell.openExternal(url)).catch(() => {});
+    }
+    return { action: 'deny' };
+  });
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   mainWindow.once('ready-to-show', () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;

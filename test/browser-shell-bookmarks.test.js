@@ -13,6 +13,9 @@ const preload = fs.readFileSync(path.join(root, 'src', 'main', 'browser-shell-pr
 test('bookmark bar renders site icons and exposes accessible folder menus', () => {
   assert.match(html, /id="bookmark-menu"[^>]*role="menu"/);
   assert.match(script, /function createBookmarkEntryButton\(/);
+  assert.match(script, /function openBookmarkEntry\(/);
+  assert.match(script, /function handleBookmarkEntryClick\(/);
+  assert.match(script, /button\.addEventListener\('auxclick'/);
   assert.match(script, /async function loadBookmarkFaviconImage\(/);
   assert.match(script, /function saveBookmarkFavicon\(/);
   assert.match(script, /aria-controls', 'bookmark-menu'/);
@@ -33,9 +36,26 @@ test('bookmark context menus support root, link, folder, escape, and viewport pl
   assert.match(script, /bookmarkMenu\?\.addEventListener\('keydown'/);
   assert.match(script, /在当前标签打开/);
   assert.match(script, /在新标签打开/);
+  assert.match(script, /bookmarkOpensInNewTab/);
   assert.match(script, /编辑收藏/);
   assert.match(script, /删除收藏/);
   assert.match(script, /重命名文件夹/);
+});
+
+test('bookmark folders open as Chrome-style cascading menus with an overflow chevron', () => {
+  assert.match(script, /function openBookmarkSubmenu\(/);
+  assert.match(script, /panel\.className = 'bookmark-menu bookmark-submenu'/);
+  assert.match(script, /function handleBookmarkMenuHover\(/);
+  assert.match(script, /event\.key === 'ArrowRight' && focused\?\.dataset\.bookmarkEntryType === 'folder'/);
+  assert.match(script, /bookmarkBar\?\.addEventListener\('mouseover'/);
+  assert.match(script, /function layoutBookmarkBarOverflow\(/);
+  assert.match(script, /showBookmarkMenu\(\{ type: 'overflow' \}/);
+  assert.match(script, /全部在新标签页中打开/);
+  assert.doesNotMatch(script, /返回上一级/);
+  assert.match(script, /closest\('#bookmark-menu, \.bookmark-submenu, #bookmark-bar'\)/);
+  assert.match(css, /\.bookmark-bar-overflow\s*\{/);
+  assert.match(css, /\.bookmark-menu-submenu-arrow\s*\{/);
+  assert.match(css, /\.bookmark-bar-item\[hidden\]/);
 });
 
 test('bookmark changes cross a profile-scoped IPC boundary', () => {

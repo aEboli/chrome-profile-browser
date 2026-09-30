@@ -3,14 +3,6 @@
   if (root) root.browserAgentActions = actions;
   if (typeof module === 'object' && module.exports) module.exports = actions;
 })(typeof window !== 'undefined' ? window : null, () => {
-  const MAX_SELECTOR_LENGTH = 500;
-  const MAX_FILL_LENGTH = 2000;
-  const MAX_TYPED_TEXT_LENGTH = 4000;
-  const MAX_ACTIONS_PER_BATCH = 24;
-  const MAX_WAIT_MS = 5000;
-  const MAX_COORDINATE = 10000;
-  const MAX_SCROLL_DELTA = 5000;
-  const MAX_DRAG_POINTS = 32;
   const ACTION_TYPES = Object.freeze([
     'screenshot', 'mouse_move', 'click', 'mouse_down', 'mouse_up', 'scroll', 'drag',
     'keypress', 'key_down', 'key_up', 'type', 'wait',
@@ -93,8 +85,8 @@
 
   function point(x, y, label = '坐标') {
     return {
-      x: finiteNumber(x, `${label} X`, { min: 0, max: MAX_COORDINATE }),
-      y: finiteNumber(y, `${label} Y`, { min: 0, max: MAX_COORDINATE }),
+      x: finiteNumber(x, `${label} X`, { min: 0 }),
+      y: finiteNumber(y, `${label} Y`, { min: 0 }),
     };
   }
 
@@ -158,7 +150,7 @@
     const values = Array.isArray(value)
       ? value
       : String(value || '').split('+').map((item) => item.trim()).filter(Boolean);
-    if (!values.length || values.length > 8) throw new Error('键盘组合无效');
+    if (!values.length) throw new Error('键盘组合无效');
     return values.map(normalizeKey);
   }
 
@@ -243,7 +235,8 @@
         const p = actionPoint(source, '鼠标坐标');
         const clickCount = type === 'double_click'
           ? 2
-          : finiteNumber(source.clickCount ?? 1, '点击次数', { min: 1, max: 3 });
+          : finiteNumber(source.clickCount ?? 1, '点击次数', { min: 1 });
+        if (!Number.isSafeInteger(clickCount)) throw new Error('点击次数无效');
         const defaultButton = type === 'right_click' ? 'right' : type === 'middle_click' ? 'middle' : 'left';
         return { type: 'click', ...p, button: normalizeButton(source.button || defaultButton), clickCount };
       }
@@ -254,8 +247,8 @@
       }
       case 'scroll': {
         const p = actionPoint(source, '滚动坐标');
-        const deltaX = finiteNumber(source.deltaX ?? source.scrollX ?? source.scroll_x ?? 0, '水平滚动量', { min: -MAX_SCROLL_DELTA, max: MAX_SCROLL_DELTA });
-        const deltaY = finiteNumber(source.deltaY ?? source.scrollY ?? source.scroll_y ?? 0, '垂直滚动量', { min: -MAX_SCROLL_DELTA, max: MAX_SCROLL_DELTA });
+        const deltaX = finiteNumber(source.deltaX ?? source.scrollX ?? source.scroll_x ?? 0, '水平滚动量');
+        const deltaY = finiteNumber(source.deltaY ?? source.scrollY ?? source.scroll_y ?? 0, '垂直滚动量');
         if (deltaX === 0 && deltaY === 0) throw new Error('滚动量不能为零');
         return { type, ...p, deltaX, deltaY };
       }
@@ -270,7 +263,6 @@
           const normalizedTo = actionPoint(to, '拖拽终点');
           rawPath = [normalizedFrom, normalizedTo];
         }
-        if (rawPath.length > MAX_DRAG_POINTS) throw new Error('拖拽路径过长');
         const path = rawPath.map((item, index) => actionPoint(item, `拖拽点 ${index + 1}`));
         return { type, path, button: normalizeButton(source.button) };
       }
@@ -281,11 +273,14 @@
         return { type, key: normalizeKey(source.key) };
       case 'type': {
         const text = String(source.text ?? source.value ?? '');
-        if (!text || text.length > MAX_TYPED_TEXT_LENGTH) throw new Error('输入文本为空或过长');
+        if (!text) throw new Error('输入文本不能为空');
         return { type, text };
       }
-      case 'wait':
-        return { type, ms: finiteNumber(source.ms ?? source.duration ?? 250, '等待时间', { min: 0, max: MAX_WAIT_MS }) };
+      case 'wait': {
+        const ms = finiteNumber(source.ms ?? source.duration ?? 250, '等待时间', { min: 0 });
+        if (!Number.isSafeInteger(ms)) throw new Error('等待时间无效');
+        return { type, ms };
+      }
       default:
         throw new Error(`不支持的动作：${type || '空'}`);
     }
@@ -413,7 +408,7 @@
   }
 
   function clickScript(selector) {
-    const encoded = encodeString(String(selector || '').slice(0, MAX_SELECTOR_LENGTH));
+    const encoded = encodeString(String(selector || ''));
     return `(() => {
       try {
         const node = document.querySelector(${encoded});
@@ -428,8 +423,8 @@
   }
 
   function fillScript(selector, value) {
-    const encodedSelector = encodeString(String(selector || '').slice(0, MAX_SELECTOR_LENGTH));
-    const encodedValue = encodeString(String(value || '').slice(0, MAX_FILL_LENGTH));
+    const encodedSelector = encodeString(String(selector || ''));
+    const encodedValue = encodeString(String(value || ''));
     return `(() => {
       try {
         const node = document.querySelector(${encodedSelector});
@@ -454,8 +449,8 @@
   }
 
   function selectScript(selector, value) {
-    const encodedSelector = encodeString(String(selector || '').slice(0, MAX_SELECTOR_LENGTH));
-    const encodedValue = encodeString(String(value || '').slice(0, MAX_FILL_LENGTH));
+    const encodedSelector = encodeString(String(selector || ''));
+    const encodedValue = encodeString(String(value || ''));
     return `(() => {
       try {
         const node = document.querySelector(${encodedSelector});
@@ -563,7 +558,7 @@
     const openMatch = text.match(/^(?:打开|访问|跳转到?)\s+(.+)$/i);
     if (openMatch) return { kind: 'open', label: '打开页面', url: openMatch[1].replace(/[。！？]+$/, '') };
     const clickMatch = text.match(/^点击(?:选择器|元素)\s+(.+)$/i);
-    if (clickMatch && clickMatch[1].trim().length <= MAX_SELECTOR_LENGTH) {
+    if (clickMatch) {
       return { kind: 'click', label: '点击元素', selector: clickMatch[1].trim() };
     }
     const fillMatch = text.match(/^填写选择器\s+(.+)$/i);
@@ -573,7 +568,7 @@
       if (separator > 0) {
         const selector = payload.slice(0, separator).trim();
         const value = payload.slice(separator + 1).trim();
-        if (selector.length <= MAX_SELECTOR_LENGTH && value.length <= MAX_FILL_LENGTH && selector && value) {
+        if (selector && value) {
           return { kind: 'fill', label: '填写元素', selector, value };
         }
       }
@@ -595,13 +590,5 @@
     selectScript,
     scrollScript,
     tablesScript,
-    limits: Object.freeze({
-      maxActionsPerBatch: MAX_ACTIONS_PER_BATCH,
-      maxCoordinate: MAX_COORDINATE,
-      maxDragPoints: MAX_DRAG_POINTS,
-      maxScrollDelta: MAX_SCROLL_DELTA,
-      maxTypedTextLength: MAX_TYPED_TEXT_LENGTH,
-      maxWaitMs: MAX_WAIT_MS,
-    }),
   });
 });

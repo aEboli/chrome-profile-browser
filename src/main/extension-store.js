@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { fetchExtensionStoreImage, hydrateExtensionStoreImages } = require('./extension-store-images');
 
 const API_BASE_URL = 'https://api.crxsoso.com';
 const SITE_BASE_URL = 'https://www.crxsoso.com';
@@ -25,6 +26,11 @@ function normalizeExtensionId(value) {
 function extensionDetailUrl(extensionId) {
   const id = normalizeExtensionId(extensionId);
   return id ? `${SITE_BASE_URL}/webstore/detail/${id}` : '';
+}
+
+function chromeWebStoreDetailUrl(extensionId) {
+  const id = normalizeExtensionId(extensionId);
+  return id ? `https://chromewebstore.google.com/detail/${id}` : '';
 }
 
 function chromeStoreDownloadUrl(extensionId) {
@@ -90,7 +96,7 @@ function parseDetailHtml(html, extensionId) {
   const structured = jsonLd(html);
   const title = htmlMeta(html, 'og:title') || nuxtField(html, 'name') || `插件 ${id.slice(0, 6)}`;
   const description = htmlMeta(html, 'og:description') || nuxtField(html, 'shortDescription');
-  const officialUrl = nuxtField(html, 'permalink') || `https://chromewebstore.google.com/detail/${id}`;
+  const officialUrl = chromeWebStoreDetailUrl(id);
   const categoryMatch = String(html || '').match(/href=["']\/webstore\/category\/[^"']+["'][^>]*>([^<]+)</i);
   const category = text(decodeHtml(categoryMatch?.[1] || nuxtField(html, 'categoryName')));
   const version = nuxtField(html, 'version');
@@ -173,7 +179,7 @@ async function searchCrxSosoExtensions(input = {}, requestFetch = fetch) {
         extensionId: id,
         sourceType: 'crxsoso-chrome',
         sourceUrl: extensionDetailUrl(id),
-        officialUrl: `https://chromewebstore.google.com/detail/${id}`,
+        officialUrl: chromeWebStoreDetailUrl(id),
         name: text(item?.name, `插件 ${id.slice(0, 6)}`),
         description: text(item?.shortDescription),
         image: text(item?.thumbnail),
@@ -187,10 +193,11 @@ async function searchCrxSosoExtensions(input = {}, requestFetch = fetch) {
       };
     })
     .filter(Boolean);
+  const hydratedExtensions = await hydrateExtensionStoreImages(extensions, requestFetch, ['.crxsoso.com']);
   return {
     keyword,
     page,
-    extensions,
+    extensions: hydratedExtensions,
     nextToken: text(data.nextToken),
     nextPageNo: Number.isSafeInteger(Number(data.nextPageNo)) ? Number(data.nextPageNo) : page + 1,
     hasMorePages: Boolean(data.hasMorePages),
@@ -205,7 +212,11 @@ async function getCrxSosoExtensionDetails(extensionId, requestFetch = fetch) {
   });
   if (!response.ok) throw new Error(`CRX Soso 详情请求失败：HTTP ${response.status}`);
   const html = (await readResponse(response, MAX_DETAIL_RESPONSE_BYTES)).toString('utf8');
-  return parseDetailHtml(html, id);
+  const detail = parseDetailHtml(html, id);
+  return {
+    ...detail,
+    image: await fetchExtensionStoreImage(detail.image, requestFetch, ['.crxsoso.com']),
+  };
 }
 
 function validateDownloadUrl(value) {

@@ -1,4 +1,5 @@
 const { contextBridge, ipcRenderer } = require('electron');
+const requestId = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 contextBridge.exposeInMainWorld('shellApi', {
   onInterfaceZoomCommand: (callback) => {
@@ -25,26 +26,49 @@ contextBridge.exposeInMainWorld('shellApi', {
   closeAgentTab: (tabId) => ipcRenderer.invoke('browser-shell:agent-close-tab', tabId),
   navigateAgent: (input) => ipcRenderer.invoke('browser-shell:agent-navigate', input),
   controlAgentTab: (input) => ipcRenderer.invoke('browser-shell:agent-tab-control', input),
-  chatAgent: (input) => ipcRenderer.invoke('browser-shell:agent-chat', input),
-  chatAgentStream: (input, onEvent) => {
-    const requestId = `agent-stream-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  chatAgent: (input, onRequestId) => {
+    const id = requestId('agent-chat');
+    try { onRequestId?.(id); } catch { /* Cancellation is best effort. */ }
+    return ipcRenderer.invoke('browser-shell:agent-chat', { ...input, requestId: id });
+  },
+  chatAgentStream: (input, onEvent, onRequestId) => {
+    const id = requestId('agent-stream');
+    try { onRequestId?.(id); } catch { /* Request cancellation is best effort. */ }
     return new Promise((resolve, reject) => {
       const listener = (_event, payload) => {
-        if (!payload || payload.requestId !== requestId) return;
+        if (!payload || payload.requestId !== id) return;
         if (payload.type === 'delta') {
           try { onEvent?.(payload); } catch { /* Renderer updates should not stop the network stream. */ }
           return;
         }
         ipcRenderer.removeListener('browser-shell:agent-stream', listener);
-        if (payload.type === 'error') reject(new Error(payload.error || 'Agent 模型请求失败'));
+        if (payload.type === 'error' || payload.type === 'cancelled') {
+          const error = new Error(payload.error || (payload.type === 'cancelled' ? 'Agent 已停止' : 'Agent 模型请求失败'));
+          if (payload.type === 'cancelled') error.name = 'AbortError';
+          reject(error);
+        }
         else resolve(payload.result || { ok: false, error: 'Agent 未返回结果' });
       };
       ipcRenderer.on('browser-shell:agent-stream', listener);
-      ipcRenderer.send('browser-shell:agent-chat-stream', requestId, input);
+      ipcRenderer.send('browser-shell:agent-chat-stream', id, input);
     });
   },
-  fetchAgentModels: (input) => ipcRenderer.invoke('browser-shell:agent-models', input),
-  jevDecision: (input) => ipcRenderer.invoke('browser-shell:jev-decision', input),
+  cancelAgentRequest: (requestId) => {
+    const safeRequestId = String(requestId || '').slice(0, 160);
+    if (!safeRequestId) return false;
+    ipcRenderer.send('browser-shell:agent-request-cancel', safeRequestId);
+    return true;
+  },
+  fetchAgentModels: (input, onRequestId) => {
+    const id = requestId('agent-models');
+    try { onRequestId?.(id); } catch { /* Cancellation is best effort. */ }
+    return ipcRenderer.invoke('browser-shell:agent-models', { ...input, requestId: id });
+  },
+  jevDecision: (input, onRequestId) => {
+    const id = requestId('agent-jev');
+    try { onRequestId?.(id); } catch { /* Request cancellation is best effort. */ }
+    return ipcRenderer.invoke('browser-shell:jev-decision', { ...input, requestId: id });
+  },
   getExtensions: () => ipcRenderer.invoke('browser-shell:get-extensions'),
   getSettings: () => ipcRenderer.invoke('browser-shell:get-settings'),
   saveSettings: (settings) => ipcRenderer.invoke('browser-shell:save-settings', settings),
@@ -77,7 +101,7 @@ contextBridge.exposeInMainWorld('shellApi', {
   setExtensionEnabled: (payload) => ipcRenderer.invoke('browser-shell:set-extension', payload),
   setExtensionPinned: (payload) => ipcRenderer.invoke('browser-shell:set-extension-pinned', payload),
   openExtensionPanel: (extensionId) => ipcRenderer.invoke('browser-shell:open-extension-panel', extensionId),
-  openExtensionManager: () => ipcRenderer.invoke('browser-shell:open-manager'),
+  openExtensionManager: (view) => ipcRenderer.invoke('browser-shell:open-manager', view),
   onExtensionsUpdated: (callback) => {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, extensions) => callback(extensions);
@@ -101,6 +125,12 @@ contextBridge.exposeInMainWorld('shellApi', {
     const listener = (_event, settings) => callback(settings);
     ipcRenderer.on('browser-shell:settings-updated', listener);
     return () => ipcRenderer.removeListener('browser-shell:settings-updated', listener);
+  },
+  onBookmarksUpdated: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, details) => callback(details);
+    ipcRenderer.on('browser-shell:bookmarks-updated', listener);
+    return () => ipcRenderer.removeListener('browser-shell:bookmarks-updated', listener);
   },
   onProfileUpdated: (callback) => {
     if (typeof callback !== 'function') return () => {};

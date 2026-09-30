@@ -5,8 +5,21 @@
 [![Test and Release](https://github.com/aEboli/chrome-profile-browser/actions/workflows/release.yml/badge.svg)](https://github.com/aEboli/chrome-profile-browser/actions/workflows/release.yml)
 [![最新发行版](https://img.shields.io/github/v/release/aEboli/chrome-profile-browser?display_name=tag&sort=semver)](https://github.com/aEboli/chrome-profile-browser/releases)
 
+每个 profile 都有独立的 Cookie、缓存、站点存储、插件和代理配置。应用适合需要隔离多个浏览环境、切换代理节点，或在自有/获授权站点上进行兼容性与自动化测试的桌面用户。
+
+## 快速开始
+
+1. 从 [GitHub Releases](https://github.com/aEboli/chrome-profile-browser/releases) 下载与你的系统匹配的安装包。
+2. 启动后新建一个 profile，在设置中选择直连、普通代理节点或 Xray/sing-box 核心节点。
+3. 在 profile 中打开目标网址；需要网页自动化时，从浏览器工具栏打开网页助手，并先检查当前页面再执行动作。
+
+首次使用建议创建空白 profile，不要直接导入主账号的 Cookie、密码或钱包。
+
 ## 文档导航
 
+- [快速开始](#快速开始)
+- [版本号规则](#版本号规则)
+- [主要能力](#主要能力)
 - [安装与首次运行](#安装与首次运行)
 - [平台支持](#平台支持)
 - [核心与数据目录](#核心与数据目录)
@@ -18,7 +31,7 @@
 
 ## 版本号规则
 
-当前版本为 `0.1.122`。产品版本使用 `大版本.小版本.更新号`：大版本示例为 `1.0.000`，小版本示例为 `0.1.000`，小功能更新号每次增加 `0.010`（例如 `0.0.100` → `0.0.110`、`0.0.230` → `0.0.240`），普通更新号每次增加 `0.001`。每次只递增一个层级；递增大版本或小版本时，所有下级归零，例如 `0.6.116` → `0.7.000`。
+当前版本为 `0.1.133`。产品版本使用 `大版本.小版本.更新号`：大版本示例为 `1.0.000`，小版本示例为 `0.1.000`，小功能更新号每次增加 `0.010`（例如 `0.0.100` → `0.0.110`、`0.0.230` → `0.0.240`），普通更新号每次增加 `0.001`。每次只递增一个层级；递增大版本或小版本时，所有下级归零，例如 `0.6.116` → `0.7.000`。
 
 版本更新使用以下命令，命令会同步 `package.json`、`package-lock.json`、README 和应用界面版本。npm 的标准 `version` 字段保留无前导零的兼容值，产品展示值保存在 `appVersion` 中。
 
@@ -30,32 +43,44 @@ npm run version:major    # 大版本，主版本 +1、下级归 0
 npm run version:check    # 检查版本字段是否一致
 ```
 
-## 当前能力
+## 主要能力
 
-- 多个持久化 profile；
-- 系统直连或选定的 HTTP/SOCKS5 节点；
-- v2rayN 常见的 VMess、VLESS、Trojan、Shadowsocks、AnyTLS 节点，可以分别交给内置 Xray-core 或 sing-box 转换为每个 profile 独立的本地 SOCKS5；AnyTLS 固定使用 sing-box；
-- 在界面手动配置 HTTP、HTTPS 或 SOCKS5 节点（服务器/IP、端口、凭据，以及可选 TLS、SNI、remote DNS 元数据）；
-- 导入 HTTP(S) 订阅、base64 URI 列表和常见 Clash YAML，并保存在线订阅源以便手动刷新；
-- 自动识别订阅响应头或提示行中的剩余流量、到期时间和重置时间；提示行不会作为可选节点，订阅区域显示汇总统计；
-- Windows x64 版本随项目内置官方 Xray-core 与 sing-box；设置页也可以选择本地核心，或从对应官方 GitHub release 下载并校验更新版本；
-- 应用会自动检查已配置代理核心的官方 release，发现新版本时在管理页提醒，不会静默替换正在使用的核心；
-- 已安装的外部 Chromium 也会自动检查官方稳定版，有新版本时在设置中提醒；内置 Electron Chromium 随应用版本更新；
-- 重新订阅成功获取节点后会直接覆盖该订阅之前的节点，刷新失败仍保留上一份成功配置；
-- 运行中的 profile 可以直接切换直连、普通代理节点或由 Xray/sing-box 托管的核心节点；
-- 节点页采用 v2rayN 常见的分组、订阅工具栏和节点表格信息架构，图标使用项目自有 SVG symbol；
-- 节点表显示地址和 IP 地址列，长中文节点名称会在列内截断；
-- 节点 TCP/协议握手检查；
-- 节点页可按当前分组和搜索筛选结果批量执行检查并显示汇总；
-- 本地 JSON 数据存储；
-- profile 启动网址和 Chrome 风格的顶部多标签管理；新建标签紧邻最后一个标签，地址栏为空时输入普通文字会使用可配置的 Google 搜索模板，浏览器设置只保留搜索引擎，Agent 快捷设置位于对话页右上角，完整的全局/环境配置位于独立的 Agent 配置页；Windows/Linux 标签行使用原生窗口控制叠加，空白区域可拖动窗口。
-- 面向自有或获授权测试站点的按环境测试身份：每个 profile 持久化一个 UUID，并可按精确 HTTP(S) 来源白名单添加 `X-CPB-Test-Identity` 请求头（仅内置 Electron 引擎）；这不是完整浏览器指纹伪装。
-  - 本地 Chromium 插件管理：支持直接加载未打包文件夹及 ZIP/CRX 导入，也支持输入 Chrome Web Store 详情页地址或 32 位扩展 ID 安装公开插件；插件管理页还可以在官方 Chrome Web Store 与 CRX Soso 之间切换搜索、查看详情并选择环境安装，官方 Chrome Web Store 打开时默认从已检查可达的代理节点中随机选择一个，商店请求仍可由用户明确切换到系统直连或其他已配置节点，不改变浏览器环境的连接方式；Firefox XPI 和 Microsoft Store 应用只作为其他商店内容，不进入 Chromium 直接安装路径；每个 profile 可独立组合要启用的插件；浏览器扩展弹层按环境分组，可固定快捷图标到当前环境工具栏，在详情中查看简介、版本和 manifest 权限并启停；工具栏显示当前环境已固定且已启用的插件，带有 `action`/`browser_action` 弹窗、`side_panel` 或 options 页面入口的插件可直接打开面板，无面板入口的插件会展开详情；插件管理页始终提供更新入口，本地目录更新代码，有来源时由用户确认更新在线版本；优先读取插件声明的 HTTPS 官方 `update_url`，带公钥或商店来源的 Chrome Web Store 插件可回退到 Google 官方更新端点，自动检查后由用户确认升级到最新版。
-- 内置 Electron 环境会在窗口最小化或隐藏时关闭后台页面节流，尽量保持页面和插件计时器运行；这会增加资源消耗，不改变 Manifest V3 Service Worker 的生命周期，也不影响外部 Chromium 的后台策略。用户关闭环境窗口后会自动执行停止流程并回收该环境的代理核心；外部 Chromium 进程自行退出时也会回收其托管核心；最小化或隐藏不会停止环境。
-- 浏览器工具栏提供网页助手入口：右侧对话栏可在当前 profile 内读取活动标签、列出/新建/切换/关闭标签、导航网页、收集链接/表格，并按明确的 CSS 选择器或坐标执行点击、填写、下拉选择、拖拽、滚轮、键盘和文本输入；坐标点击会先沿短路径移动，再按下和抬起鼠标，因此页面空白区域、画布和没有可点击 DOM 元素的位置也能操作；动作卡片显示具体动作及坐标、滚动距离、按键等参数，输入文字只显示字符数；网页打开的新窗口会进入同一标签栏，profile session 开放网页权限并同步下载记录，动作不执行任意脚本。通过系统选择器明确授权后，Agent 还可列出文件夹全部条目、读取文本文件全部内容，并把授权文件上传到当前页面的 `input[type=file]`；授权只在当前 profile 运行期间有效，不返回完整本地路径。独立的 Agent 配置页可按全部或指定环境启用，并为单个环境保存覆盖配置；Agent 设置支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Google Gemini，可点击模型输入框自动获取模型列表，也可测试接口连通性；设置支持自定义上下文预算、单次输出、温度和工具步骤；步骤设为 `0` 表示持续执行。JEV 使用 TypeSafe System One 官方 Key，也支持自定义兼容接口；网页任务每批动作后自动判断是否完成并显示置信度和理由，未完成时继续执行，完成时生成最终总结；普通闲聊不触发自动判断，`jev_decide` 仍可按需调用。模型、JEV 和可安全重试的页面操作遇到瞬时失败时按 1、2、4、8、16 秒间隔最多自动重试 5 次，用户可停止等待；结果不确定的点击、提交和上传会先重新观察，不盲目重复。`window.browserAgent` 与 shell preload bridge 只提供受控的观察、动作和本地文件接口。
-- 网页助手会把疑似人机验证标记放入观察结果并提示用户，但不会自动暂停远程 Agent 的页面动作；用户可以随时停止任务。
-- 浏览器环境支持 `F5` 刷新、`F12` 开发者工具，以及默认右键“右滑 → 左滑”后退的鼠标手势；快捷键、手势按键/方向/动作/距离都可在浏览器设置中自定义，网页助手也能用受控工具辅助配置。
-- 启动浏览器环境后配置中心会自动隐藏到系统托盘；双击托盘图标恢复，右键菜单可展开配置中心或退出应用，悬停提示显示正在运行的浏览器数量和名称。
+### Profile、标签页与数据
+
+- 多个持久化 profile；每个 profile 独立保存 Cookie、缓存、站点存储、代理、插件和浏览器设置。
+- Chrome 风格顶部多标签、启动网址、可配置搜索模板、站点图标和新标签页外观；新窗口会进入同一标签栏。
+- Chrome/Edge/Chromium 书签来源发现，以及 Chromium JSON、HTML 书签文件的选择性导入；书签栏支持文件夹、拖放排序、快捷打开和去重。
+- 按环境隔离的密码本，支持站点分组、按需显示密码和受控的网页登录字段自动填充。
+- 本地 JSON 数据存储；可以从应用内打开数据目录查看实际路径。
+
+### 节点、订阅与核心
+
+- 系统直连、HTTP/HTTPS/SOCKS5 节点，以及 VMess、VLESS、Trojan、Shadowsocks、AnyTLS。
+- 导入 HTTP(S) 订阅、base64 URI 列表和常见 Clash YAML；订阅刷新成功后替换该来源的节点，失败时保留上一份成功配置。
+- 识别订阅流量、到期和重置信息；节点表支持分组、搜索、地址/IP 列和批量 TCP/协议握手检查。
+- 核心节点按 profile 启动独立的本地 SOCKS5。Windows x64 发行包内置官方 Xray-core 与 sing-box，其他平台可以在设置中下载并校验官方核心或选择本地核心。
+- 应用会提醒代理核心和外部 Chromium 的官方更新，不会静默替换正在使用的进程。
+
+### 扩展与桌面体验
+
+- 支持加载未打包扩展，以及 ZIP/CRX、Chrome Web Store 详情页或扩展 ID 安装；每个 profile 可单独启停和固定扩展。
+- 扩展详情展示版本、简介和 manifest 权限；支持 `action`、`browser_action`、`side_panel` 和 options 页面入口。
+- 支持 F5、F12、可配置快捷键和鼠标手势；环境最小化或隐藏时尽量保持页面计时器运行，关闭环境后回收托管核心。
+- 配置中心支持系统托盘驻留、运行环境提示和快速恢复。
+
+### 网页助手
+
+- 右侧对话栏可以观察当前页面、读取标签与表格、管理标签、导航网页，并执行 CSS 选择器或坐标驱动的点击、填写、选择、拖拽、滚轮、键盘和文本输入。
+- 通过系统选择器明确授权后，可以列出目录、读取文本文件，并将授权文件上传到当前页面的 `input[type=file]`；授权只在当前 profile 运行期间有效。
+- 支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Google Gemini；可获取模型列表、测试连通性，配置上下文预算、输出长度、温度、思考等级和步骤数。步骤为 `0` 时持续执行。
+- JEV 可在 Agent 配置中独立开关。开启后网页任务会在每批动作后判断是否完成并给出置信度与理由；关闭后不会请求 JEV，也不会向 Agent 暴露 JEV 判断工具。
+- 模型、JEV 和可安全重试的页面操作支持指数退避重试；用户可以停止等待，结果不确定的点击、提交和上传会先重新观察。
+- 通过 `window.browserAgent` 和 shell preload bridge 暴露受控观察、动作、标签与文件接口，不执行任意网页脚本。
+
+### 授权测试身份
+
+- 每个 profile 可以持久化一个 UUID，并按精确 HTTP(S) origin 白名单添加 `X-CPB-Test-Identity` 请求头，仅适用于内置 Electron 引擎。
+- 该功能用于自有或获授权的兼容性测试，不等同于浏览器指纹伪装，也不会修改 User-Agent、Canvas、WebGL、TLS 或 WebRTC。
 
 ## 连接与引擎限制
 
@@ -76,7 +101,7 @@ npm run version:check    # 检查版本字段是否一致
 
 节点用户名和密码优先使用操作系统提供的 Electron `safeStorage` 加密后保存。若系统密钥环不可用，应用会为保证本地功能降级为明文保存；请保护操作系统账户、数据目录和 `state.json`，不要把该文件提交到公共仓库。
 
-Agent Token 与 JEV Key 不会返回到 renderer 公共状态；在独立 Agent 配置页或对话页 Agent 设置中输入新密钥时会先询问是否长期保留，确认后使用 `safeStorage` 保存，拒绝则不写入状态文件。Agent 思考等级提供 `Off`、`Minimal`、`Low`、`Medium`、`High`、`XHigh`、`Max` 七档，模型不支持所选等级时会自动退到相邻可用等级。主进程负责向所选 Agent 协议和 JEV provider 发起请求，并限制 URL、超时、响应大小和上下文消息数量；模型列表和连通性检查均由主进程完成，不持久化临时 Token。已有节点 IP 会异步查询公开 IP 的国家信息，私有地址和查询失败会保留未解析提示；节点服务器 IP 不代表代理出口 IP。
+Agent Token 与 JEV Key 不会返回到 renderer 公共状态；在独立 Agent 配置页或对话页 Agent 设置中输入新密钥时会先询问是否长期保留，确认后使用 `safeStorage` 保存，拒绝则不写入状态文件。Agent 思考等级提供 `Off`、`Minimal`、`Low`、`Medium`、`High`、`XHigh`、`Max` 七档，模型不支持所选等级时会自动退到相邻可用等级。主进程负责向所选 Agent 协议和 JEV provider 发起请求；应用不按固定时长或请求/响应字节数终止请求，模型列表、连通性检查、聊天和 JEV 请求都可取消。对话没有固定消息条数限制，上下文仍按配置预算裁剪并在接近预算时压缩。模型列表和连通性检查均由主进程完成，不持久化临时 Token。已有节点 IP 会异步查询公开 IP 的国家信息，私有地址和查询失败会保留未解析提示；节点服务器 IP 不代表代理出口 IP。
 
 请只在自有或获授权的站点上做隐私、兼容性和自动化测试。测试第三方 Chromium 内核时，先使用空白 profile、非管理员账户或虚拟机，不要导入主账号 Cookie、密码或钱包。
 
@@ -95,10 +120,10 @@ await window.browserAgent.openTab({ url: 'https://example.com' });
 await window.browserAgent.tabs();
 await window.browserAgent.chooseFiles({ multiple: true });
 await window.browserAgent.uploadFiles({ selector: 'input[type=file]', fileIds: ['agent-file-id'] });
-window.browserAgent.capabilities(); // browser-agent.v1、动作列表和限制
+window.browserAgent.capabilities(); // browser-agent.v1、动作列表和坐标空间
 ```
 
-支持的动作包括 `screenshot`、`mouse_move`、`click`、`mouse_down`、`mouse_up`、`scroll`、`drag`、`keypress`、`key_down`、`key_up`、`type` 和 `wait`；另外可通过 `tabs`、`openTab`、`switchTab`、`closeTab`、`navigate` 和 `tabControl` 管理当前 profile 的标签。`chooseFiles`、`chooseDirectory`、`listFiles`、`readFile` 和 `uploadFiles` 只处理用户通过系统选择器授权的本地文件。截图会归一化到 CSS viewport 尺寸，因此模型返回的坐标可直接传给鼠标动作；坐标、键名、文本、等待时间、拖拽路径和批次数量都有上限；接入 JEV 时应复用这些接口，不要绕过动作白名单。当前协议层会把 Responses 的 `function_call` 与工具结果转换成配对的 `function_call_output`，并在裁剪上下文时保留完整工具调用组。
+支持的动作包括 `screenshot`、`mouse_move`、`click`、`mouse_down`、`mouse_up`、`scroll`、`drag`、`keypress`、`key_down`、`key_up`、`type` 和 `wait`；另外可通过 `tabs`、`openTab`、`switchTab`、`closeTab`、`navigate` 和 `tabControl` 管理当前 profile 的标签。`chooseFiles`、`chooseDirectory`、`listFiles`、`readFile` 和 `uploadFiles` 只处理用户通过系统选择器授权的本地文件。网页动作没有固定文本长度、数值范围、动作数量、按键数或拖拽点数上限；坐标仍需位于当前页面 viewport，类型、有限数值、非空批次和动作/按键白名单仍会校验。接入 JEV 时应复用这些接口，不要绕过动作白名单。授权文件的数量、目录遍历、文本读取和上传批次没有应用层上限。当前协议层会把 Responses 的 `function_call` 与工具结果转换成配对的 `function_call_output`，并在裁剪上下文时保留完整工具调用组。
 
 `scroll.deltaY` 约定正数向下、负数向上，执行器会转换 Electron/Chromium 的底层滚轮符号。
 
@@ -172,9 +197,10 @@ npm run dist:mac       # 在当前 macOS 架构生成 DMG 和 ZIP
 npm run version:patch       # 或 version:feature / version:minor / version:major
 npm run check
 npm test
-git add package.json package-lock.json README.md
-git commit -m "release: v0.1.123"
-git tag v0.1.123
+$version = (Get-Content package.json -Raw | ConvertFrom-Json).appVersion
+git add -A
+git commit -m "release: v$version"
+git tag "v$version"
 git push origin main --follow-tags
 ```
 

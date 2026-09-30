@@ -1,6 +1,5 @@
 const { randomUUID } = require('node:crypto');
 
-const MAX_BOOKMARK_RECORDS = 200;
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 function normalizeBookmarkUrl(value) {
@@ -27,6 +26,11 @@ function normalizeFavicon(value) {
   }
 }
 
+function normalizeImportMetadata(value, maxLength = 2048) {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  return value.trim().slice(0, maxLength);
+}
+
 function nextId(prefix) {
   return `${prefix}-${randomUUID()}`;
 }
@@ -45,7 +49,6 @@ function normalizeBookmarks(value, { makeId = nextId, now = () => new Date().toI
   const urls = new Set();
 
   for (const source of records) {
-    if (result.length >= MAX_BOOKMARK_RECORDS) break;
     if (!source || typeof source !== 'object' || Array.isArray(source)) continue;
     const type = source.type === 'folder' ? 'folder' : 'bookmark';
     let recordId = typeof source.id === 'string' && ID_PATTERN.test(source.id)
@@ -61,6 +64,8 @@ function normalizeBookmarks(value, { makeId = nextId, now = () => new Date().toI
     const createdAt = typeof source.createdAt === 'string' && source.createdAt.trim()
       ? source.createdAt.trim().slice(0, 64)
       : now();
+    const importSource = normalizeImportMetadata(source.importSource, 256);
+    const importPath = normalizeImportMetadata(source.importPath, 2048);
 
     if (type === 'folder') {
       result.push({
@@ -68,6 +73,8 @@ function normalizeBookmarks(value, { makeId = nextId, now = () => new Date().toI
         type,
         title: title || '新建文件夹',
         parentId,
+        ...(importSource ? { importSource } : {}),
+        ...(importPath ? { importPath } : {}),
         createdAt,
       });
       continue;
@@ -83,6 +90,8 @@ function normalizeBookmarks(value, { makeId = nextId, now = () => new Date().toI
       url,
       favicon: normalizeFavicon(source.favicon),
       parentId,
+      ...(importSource ? { importSource } : {}),
+      ...(importPath ? { importPath } : {}),
       createdAt,
     });
   }
@@ -124,8 +133,6 @@ function addBookmarkRecord(records, input, options = {}) {
     current[existingIndex] = bookmark;
     return { bookmark, bookmarks: current };
   }
-  if (current.length >= MAX_BOOKMARK_RECORDS) throw new Error('收藏栏最多保存 200 项');
-
   const makeId = options.makeId || nextId;
   const bookmark = {
     id: unusedId('bookmark', current, makeId),
@@ -141,7 +148,6 @@ function addBookmarkRecord(records, input, options = {}) {
 
 function createBookmarkFolder(records, input, options = {}) {
   const current = normalizeBookmarks(records, options);
-  if (current.length >= MAX_BOOKMARK_RECORDS) throw new Error('收藏栏最多保存 200 项');
   const title = (typeof input?.title === 'string' ? input.title.trim() : '').slice(0, 160);
   if (!title) throw new Error('文件夹名称不能为空');
   const parentId = requireParentFolder(current, typeof input?.parentId === 'string' ? input.parentId : '');
@@ -210,6 +216,7 @@ module.exports = {
   createBookmarkFolder,
   deleteBookmarkRecord,
   normalizeFavicon,
+  normalizeBookmarkUrl,
   normalizeBookmarks,
   updateBookmarkRecord,
 };

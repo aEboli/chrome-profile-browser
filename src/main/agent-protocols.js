@@ -260,7 +260,7 @@ const TOOL_DEFINITIONS = Object.freeze([
         x: { type: 'number' },
         y: { type: 'number' },
         button: { type: 'string', enum: ['left', 'middle', 'right'] },
-        clickCount: { type: 'integer', minimum: 1, maximum: 3 },
+        clickCount: { type: 'integer', minimum: 1 },
       },
       required: ['x', 'y'],
       additionalProperties: false,
@@ -319,7 +319,7 @@ const TOOL_DEFINITIONS = Object.freeze([
     description: '等待当前网页完成渲染或响应，单位为毫秒。',
     parameters: Object.freeze({
       type: 'object',
-      properties: { ms: { type: 'integer', minimum: 0, maximum: 5000 } },
+      properties: { ms: { type: 'integer', minimum: 0 } },
       required: ['ms'],
       additionalProperties: false,
     }),
@@ -342,6 +342,12 @@ const TOOL_DEFINITIONS = Object.freeze([
     }),
   }),
 ]);
+
+function agentToolsForJev(jevAutoJudgeEnabled = true) {
+  return jevAutoJudgeEnabled === false
+    ? TOOL_DEFINITIONS.filter((tool) => tool.name !== 'jev_decide')
+    : TOOL_DEFINITIONS;
+}
 
 function protocolDefinition(value) {
   const source = String(value || '').trim().toLowerCase();
@@ -913,6 +919,7 @@ module.exports = {
   REASONING_EFFORTS,
   PROTOCOLS,
   TOOL_DEFINITIONS,
+  agentToolsForJev,
   authHeaders,
   buildAgentRequest,
   endpointFor,

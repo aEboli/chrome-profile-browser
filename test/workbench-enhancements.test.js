@@ -133,7 +133,8 @@ test('action icons match their visible descriptions', () => {
   assert.match(managerHtml, /id="choose-extension"[\s\S]*?#icon-folder/);
   assert.match(managerHtml, /id="icon-settings"[^>]*>[\s\S]*?circle cx="12" cy="12" r="3"/);
   const browserShell = fs.readFileSync(path.join(root, 'src', 'renderer', 'browser-shell.html'), 'utf8');
-  assert.match(browserShell, /data-agent-action="page"[\s\S]*?#shell-icon-file-text/);
+  assert.match(browserShell, /id="agent-toggle"[\s\S]*?#shell-icon-ai/);
+  assert.doesNotMatch(browserShell, /data-agent-action="page"/);
 });
 
 test('agent configuration has its own compact page and model connectivity actions', () => {
@@ -142,11 +143,13 @@ test('agent configuration has its own compact page and model connectivity action
   assert.match(managerHtml, /id="agent-environment-list"/);
   assert.match(managerHtml, /id="test-agent-connection"[^>]+aria-label="测试连通性"/);
   assert.match(managerHtml, /id="manager-agent-model-options"/);
+  assert.match(managerHtml, /id="manager-jev-enabled"[^>]+type="checkbox"/);
   assert.doesNotMatch(managerHtml, /id="agent-management-heading"/);
   assert.match(rendererSource, /function renderAgentEnvironmentManagement\(/);
   assert.match(rendererSource, /agent-environment-target/);
   assert.match(rendererSource, /fetchAgentModels\(/);
   assert.match(rendererSource, /testAgentConnection\(/);
+  assert.match(rendererSource, /jevAutoJudgeEnabled: elements\.jevAutoJudgeEnabled\?\.checked === true/);
   assert.match(mainSource, /handle\('agent:fetch-models'/);
   assert.match(mainSource, /handle\('agent:test-connection'/);
   assert.match(fs.readFileSync(path.join(root, 'src', 'main', 'preload.js'), 'utf8'), /fetchAgentModels/);

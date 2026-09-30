@@ -1,10 +1,14 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 const invoke = (channel, payload) => ipcRenderer.invoke(channel, payload);
+const requestId = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 contextBridge.exposeInMainWorld('api', {
   setInterfaceZoom: (factor) => invoke('app:set-interface-zoom', factor),
   getState: () => invoke('state:get'),
+  getBookmarkImportSources: () => invoke('bookmarks:import-sources'),
+  chooseBookmarkImportFiles: () => invoke('bookmarks:choose-files'),
+  importBrowserBookmarks: (payload) => invoke('bookmarks:import', payload),
   chooseExtensionPath: () => invoke('extension:choose'),
   chooseExtensionDirectory: () => invoke('extension:choose-directory'),
   inspectExtension: (sourcePath) => invoke('extension:inspect', sourcePath),
@@ -23,8 +27,22 @@ contextBridge.exposeInMainWorld('api', {
   updateExtension: (extensionId) => invoke('extension:update', extensionId),
   getAgentProfileSettings: (profileId) => invoke('agent:get-profile-settings', profileId),
   saveAgentProfileSettings: (payload) => invoke('agent:save-profile-settings', payload),
-  fetchAgentModels: (payload) => invoke('agent:fetch-models', payload),
-  testAgentConnection: (payload) => invoke('agent:test-connection', payload),
+  fetchAgentModels: (payload, onRequestId) => {
+    const id = requestId('manager-agent-models');
+    try { onRequestId?.(id); } catch { /* Cancellation is best effort. */ }
+    return invoke('agent:fetch-models', { ...payload, requestId: id });
+  },
+  testAgentConnection: (payload, onRequestId) => {
+    const id = requestId('manager-agent-connection');
+    try { onRequestId?.(id); } catch { /* Cancellation is best effort. */ }
+    return invoke('agent:test-connection', { ...payload, requestId: id });
+  },
+  cancelAgentRequest: (id) => {
+    const safeId = String(id || '').slice(0, 160);
+    if (!safeId) return false;
+    ipcRenderer.send('browser-shell:agent-request-cancel', safeId);
+    return true;
+  },
   saveProfile: (profile) => invoke('profile:save', profile),
   deleteProfile: (profileId) => invoke('profile:delete', profileId),
   launchProfile: (profileId) => invoke('profile:launch', profileId),

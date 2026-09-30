@@ -5,6 +5,7 @@ const {
   PROTOCOLS,
   REASONING_EFFORTS,
   TOOL_DEFINITIONS,
+  agentToolsForJev,
   authHeaders,
   buildAgentRequest,
   modelsEndpointFor,
@@ -43,7 +44,15 @@ test('lists and normalizes all supported agent protocols', () => {
   assert.ok(controls);
   const jev = TOOL_DEFINITIONS.find((tool) => tool.name === 'jev_decide');
   assert.deepEqual(jev.parameters.required, ['state', 'questions']);
+  assert.ok(agentToolsForJev(true).some((tool) => tool.name === 'jev_decide'));
+  assert.ok(!agentToolsForJev(false).some((tool) => tool.name === 'jev_decide'));
   assert.deepEqual(controls.parameters.properties.gestureAction.enum, ['back', 'forward', 'reload', 'devtools']);
+  const click = TOOL_DEFINITIONS.find((tool) => tool.name === 'browser_click');
+  assert.deepEqual(click.parameters.properties.clickCount, { type: 'integer', minimum: 1 });
+  const wait = TOOL_DEFINITIONS.find((tool) => tool.name === 'browser_wait');
+  assert.deepEqual(wait.parameters.properties.ms, { type: 'integer', minimum: 0 });
+  const drag = TOOL_DEFINITIONS.find((tool) => tool.name === 'browser_drag');
+  assert.deepEqual(drag.parameters.properties.path, { type: 'array', minItems: 2, items: { type: 'object' } });
 });
 
 test('supports configured reasoning levels and clamps unavailable extremes', () => {
@@ -87,6 +96,13 @@ test('builds streaming requests for every supported agent protocol', () => {
       assert.equal(request.body.stream, true);
     }
   }
+});
+
+test('builds request bodies larger than the former application byte ceiling', () => {
+  const content = 'x'.repeat(8 * 1024 * 1024 + 1);
+  const request = buildAgentRequest({ ...baseInput, messages: [{ role: 'user', content }] });
+  assert.equal(request.body.messages[0].content.length, content.length);
+  assert.ok(Buffer.byteLength(JSON.stringify(request.body), 'utf8') > 8 * 1024 * 1024);
 });
 
 test('builds final-answer requests without browser tools', () => {

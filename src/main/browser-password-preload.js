@@ -33,7 +33,34 @@ function installGuestInterfaceZoom({ targetWindow, sendCommand }) {
   });
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = { installGuestInterfaceZoom };
+const ACCOUNT_FIELD_HINT = /(?:\b(?:user(?:name)?|login(?:name)?|email|account|phone|mobile|tel)\b|用户名|账号|登录名|邮箱|手机号?|电话号码)/i;
+
+function credentialFieldText(field) {
+  const values = [
+    field?.name,
+    field?.id,
+    field?.placeholder,
+    field?.autocomplete,
+    field?.title,
+    field?.getAttribute?.('aria-label'),
+  ];
+  return values
+    .filter((value) => typeof value === 'string' && value.trim())
+    .join(' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2');
+}
+
+function isPasswordBookField(field) {
+  if (!field || field.disabled || String(field.type || '').toLowerCase() === 'hidden') return false;
+  const type = String(field.type || '').toLowerCase();
+  if (type === 'password' || type === 'email' || type === 'tel') return true;
+  const autocomplete = String(field.autocomplete || '').trim().toLowerCase().split(/\s+/).pop();
+  return ['username', 'email', 'tel'].includes(autocomplete) || ACCOUNT_FIELD_HINT.test(credentialFieldText(field));
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { installGuestInterfaceZoom, isPasswordBookField };
+}
 
 if (typeof window !== 'undefined') {
 const { ipcRenderer } = require('electron');
@@ -85,9 +112,7 @@ const { ipcRenderer } = require('electron');
   }
 
   function passwordFieldFor(root) {
-    return inputCandidates(root).find((field) => field.type === 'password')
-      || inputCandidates(document).find((field) => field.type === 'password')
-      || null;
+    return inputCandidates(root).find((field) => field.type === 'password') || null;
   }
 
   function usernameFieldFor(root, passwordField = null) {
@@ -100,7 +125,7 @@ const { ipcRenderer } = require('electron');
 
   function formFor(field) {
     if (field?.form) return field.form;
-    return field?.closest?.('form') || document.querySelector('form');
+    return field?.closest?.('form') || document;
   }
 
   function credentialFields(root) {
@@ -440,11 +465,7 @@ const { ipcRenderer } = require('electron');
   document.addEventListener('focusin', (event) => {
     const field = event.target;
     if (!(field instanceof HTMLInputElement) || !visible(field)) return;
-    const form = formFor(field);
-    const looksLikeAccount = field.type === 'password'
-      || /^(username|email|tel)$/i.test(field.autocomplete)
-      || (['text', 'email', 'tel'].includes(field.type) && Boolean(passwordFieldFor(form)));
-    if (looksLikeAccount) requestSuggestions(field);
+    if (isPasswordBookField(field)) requestSuggestions(field);
   }, true);
 
   document.addEventListener('input', (event) => {

@@ -42,7 +42,7 @@ test('describes pointer and keyboard actions with their concrete parameters', ()
   assert.equal(actions.actionLabel({ type: 'type', text: 'secret text' }), '输入文字（11 字）');
 });
 
-test('normalizes computer-use input actions and keeps them bounded', () => {
+test('normalizes valid computer-use actions without fixed application caps', () => {
   assert.deepEqual(actions.normalizeAgentAction({ type: 'double_click', x: 10, y: 20 }), {
     type: 'click', x: 10, y: 20, button: 'left', clickCount: 2,
   });
@@ -69,8 +69,37 @@ test('normalizes computer-use input actions and keeps them bounded', () => {
     { type: 'keyUp', keyCode: 'Control' },
   ]);
   assert.throws(() => actions.normalizeAgentAction({ type: 'click', x: -1, y: 10 }), /无效/);
-  assert.throws(() => actions.normalizeAgentAction({ type: 'type', text: 'x'.repeat(4001) }), /过长/);
   assert.throws(() => actions.normalizeAgentAction({ type: 'scroll', x: 1, y: 1 }), /不能为零/);
+  assert.equal(actions.normalizeAgentAction({ type: 'click', x: 10001, y: 10002, clickCount: 4 }).clickCount, 4);
+  assert.equal(actions.normalizeAgentAction({ type: 'type', text: 'x'.repeat(4001) }).text.length, 4001);
+  assert.equal(actions.normalizeAgentAction({ type: 'scroll', x: 1, y: 1, deltaY: 5001 }).deltaY, 5001);
+  assert.equal(actions.normalizeAgentAction({ type: 'wait', ms: 5001 }).ms, 5001);
+  assert.equal(actions.normalizeAgentAction({ type: 'drag', path: Array.from({ length: 33 }, (_, index) => [index, index]) }).path.length, 33);
+  assert.equal(actions.normalizeAgentAction({ type: 'keypress', keys: [...'ABCDEFGHI'] }).keys.length, 9);
+  const shell = fs.readFileSync(path.join(rendererRoot, 'browser-shell.js'), 'utf8');
+  assert.match(shell, /function boundedAgentPoint\(point, viewport[\s\S]*?x >= viewport\.width \|\| y >= viewport\.height/);
+});
+
+test('preserves long selectors and values through instruction and action templates', () => {
+  const selector = `#${'x'.repeat(600)}`;
+  const value = 'y'.repeat(2400);
+  assert.deepEqual(actions.parseCommand(`点击选择器 ${selector}`), { kind: 'click', label: '点击元素', selector });
+  assert.deepEqual(actions.parseCommand(`填写选择器 ${selector}：${value}`), { kind: 'fill', label: '填写元素', selector, value });
+
+  let receivedSelector = '';
+  let receivedValue = '';
+  const context = {
+    document: {
+      querySelector(next) {
+        receivedSelector = next;
+        return { tagName: 'INPUT', focus() {}, dispatchEvent() {}, set value(nextValue) { receivedValue = nextValue; } };
+      },
+    },
+    Event: function Event() {},
+  };
+  vm.runInNewContext(actions.fillScript(selector, value), context);
+  assert.equal(receivedSelector, selector);
+  assert.equal(receivedValue, value);
 });
 
 test('keeps selector and fill values as data in fixed page action scripts', () => {
@@ -158,23 +187,36 @@ test('renders the robot entry and docked conversation panel in the browser shell
   assert.match(html, /browser-agent-actions\.js/);
   assert.match(html, /agent-retry\.js/);
   assert.match(html, /agent-completion\.js/);
-  assert.match(html, /data-agent-action="screenshot"/);
+  assert.doesNotMatch(html, /agent-quick-actions/);
+  assert.doesNotMatch(html, /agent-queue-send/);
+  assert.doesNotMatch(html, /agent-send-now/);
+  assert.match(html, /id="agent-context-usage"[^>]*aria-live="polite"/);
   assert.match(html, /id="agent-model-summary"[^>]*aria-controls="agent-model-picker"/);
   assert.match(html, /id="agent-model-options"/);
   assert.match(html, /id="agent-human-verification"/);
   assert.match(html, /id="agent-human-verification-resume"/);
-  assert.match(html, /id="agent-queue-send"/);
-  assert.match(html, /id="agent-send-now"/);
   assert.match(html, /shell-icon-mouse/);
   assert.match(css, /\.browser-stage\s*\{[^}]*display:\s*flex/s);
   assert.match(css, /\.agent-panel\s*\{[^}]*border-left/s);
   assert.match(css, /\.agent-input-status\s*\{/);
+  assert.match(css, /\.agent-composer-footer \{[^}]*margin-left:\s*auto/);
+  assert.match(css, /\.agent-composer-footer,\s*\n\.agent-model-summary,\s*\n\.agent-context-usage,\s*\n\.agent-send \{ height: 28px; \}/);
   assert.match(css, /\.browser-settings-legacy-agent\s*\{\s*display:\s*none/);
   assert.match(shell, /openai-responses/);
   assert.match(shell, /OpenAI Responses/);
   assert.match(shell, /agentReasoningEffort/);
+  assert.match(shell, /\$\{model\} · \${reasoning}/);
+  assert.match(shell, /function agentContextUsagePercent\(/);
+  assert.match(shell, /function requestAgentContextCompression\(/);
+  assert.match(shell, /function waitForAgentAction\(/);
+  assert.match(shell, /signal\?\.addEventListener\('abort', onAbort/);
+  assert.doesNotMatch(shell, /maxActionsPerBatch/);
+  assert.doesNotMatch(shell, /单批最多执行/);
+  assert.match(shell, /上下文使用量低于 50%/);
   assert.match(shell, /jev_decide/);
   assert.match(shell, /function judgeAgentCompletion\(/);
+  assert.match(shell, /ranPageTool && !agentStopRequested && browserSettings\.jevAutoJudgeEnabled !== false/);
+  assert.match(shell, /if \(browserSettings\.jevAutoJudgeEnabled === false\) throw new Error\('JEV 模型未启用'\)/);
   assert.match(shell, /taskActionHistory = agentCompletion\.appendActionHistory/);
   assert.match(shell, /actions: taskActionHistory\.actions/);
   assert.match(shell, /earlierActionCount: taskActionHistory\.omittedCount/);
@@ -191,15 +233,16 @@ test('renders the robot entry and docked conversation panel in the browser shell
   assert.match(shell, /不会代替你识别或提交验证/);
   assert.match(shell, /setInterval\(\(\) => \{\s*void resumeHumanVerification\(\{ silent: true \}\)/);
   assert.match(shell, /scheduleAgentTask/);
-  assert.match(shell, /for \(const button of agentQuickActions\) button\.disabled = false/);
   assert.match(css, /agent-send-progress/);
   assert.match(css, /agent-send.is-busy:hover \.agent-send-progress/);
-  assert.match(shell, /if \(runId === agentRunSequence\) \{\s*if \(agentRetryController === retryController\) agentRetryController = null;\s*agentStopRequested = false;\s*setAgentBusy\(false\)/);
+  assert.match(shell, /if \(runId === agentRunSequence\) \{[\s\S]*?agentStopRequested = false;[\s\S]*?setAgentBusy\(/);
 });
 
 test('exposes a model-ready browser agent bridge without arbitrary script execution', () => {
   const shell = fs.readFileSync(path.join(rendererRoot, 'browser-shell.js'), 'utf8');
   const preload = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'browser-shell-preload.js'), 'utf8');
+  const managerPreload = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.js'), 'utf8');
+  const managerRenderer = fs.readFileSync(path.join(rendererRoot, 'renderer.js'), 'utf8');
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'main.js'), 'utf8');
   assert.match(shell, /window\.browserAgent\s*=\s*Object\.freeze/);
   assert.match(shell, /protocol: 'browser-agent\.v1'/);
@@ -216,8 +259,25 @@ test('exposes a model-ready browser agent bridge without arbitrary script execut
   assert.match(main, /browser-shell:agent-chat/);
   assert.match(main, /browser-shell:agent-models/);
   assert.match(main, /browser-shell:jev-decision/);
-  assert.match(main, /tools: input\?\.finalize === true \? \[\] : AGENT_TOOL_DEFINITIONS/);
+  assert.match(shell, /agentRequestCancel\?\.\(\)/);
+  assert.match(preload, /cancelAgentRequest: \(requestId\)/);
+  assert.match(preload, /chatAgent: \(input, onRequestId\)/);
+  assert.match(preload, /fetchAgentModels: \(input, onRequestId\)/);
+  assert.match(managerPreload, /fetchAgentModels: \(payload, onRequestId\)/);
+  assert.match(managerPreload, /testAgentConnection: \(payload, onRequestId\)/);
+  assert.match(managerRenderer, /function cancelAgentModelFetch\(/);
+  assert.match(managerRenderer, /cancelAgentRequest\?\.\(agentConnectionTestRequestId\)/);
+  assert.match(main, /browser-shell:agent-request-cancel/);
+  assert.match(main, /async function runAgentRequest\(/);
+  assert.match(main, /requestAgentModels\(profileId, input, \{ cancelSignal: signal \}\)/);
+  assert.match(main, /requestAgentModel\(profileId, input, signal\)/);
+  assert.match(main, /requestAgentModelStream\(profileId, input, \(delta\) => send\(delta\), controller\.signal\)/);
+  assert.match(main, /runAgentRequest\(event\.sender, input\?\.requestId, \(signal\) => requestJevDecision\(profileId, input, signal\)\)/);
+  assert.match(main, /tools: input\?\.finalize === true \? \[\] : agentToolsForJev\(connection\.jevAutoJudgeEnabled\)/);
+  assert.match(main, /if \(!connection\.autoJudgeEnabled\) throw new Error\('请先在 Agent 配置中启用 JEV 模型'\)/);
   assert.match(main, /scriptJson\(/);
+  assert.doesNotMatch(main, /MAX_AGENT_REQUEST_BYTES|AGENT_REQUEST_TIMEOUT_MS|网页助手动作数据过大/);
+  assert.doesNotMatch(main, /receivedBytes > MAX_AGENT_REQUEST_BYTES/);
   assert.doesNotMatch(shell, /eval\s*\(/);
 });
 

@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-09-28
+goal: 对齐 Chrome 常见图片菜单行为，并确保复制及二维码针对当前图片

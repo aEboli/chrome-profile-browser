@@ -12,6 +12,17 @@ const browserShell = read('src', 'renderer', 'browser-shell.js');
 const shellStyles = read('src', 'renderer', 'browser-shell.css');
 const passwordPreload = read('src', 'main', 'browser-password-preload.js');
 const managerStyles = read('src', 'renderer', 'styles.css');
+const { isPasswordBookField } = require('../src/main/browser-password-preload');
+
+test('password suggestions only trigger for credential-like fields', () => {
+  assert.equal(isPasswordBookField({ type: 'text', name: 'productName', placeholder: '商品名称' }), false);
+  assert.equal(isPasswordBookField({ type: 'text', name: 'name', id: 'displayName' }), false);
+  assert.equal(isPasswordBookField({ type: 'password', name: 'secret' }), true);
+  assert.equal(isPasswordBookField({ type: 'text', autocomplete: 'username' }), true);
+  assert.equal(isPasswordBookField({ type: 'text', name: 'loginName' }), true);
+  assert.equal(isPasswordBookField({ type: 'text', placeholder: '请输入邮箱' }), true);
+  assert.equal(isPasswordBookField({ type: 'email', name: 'contact' }), true);
+});
 
 test('password book view exposes entry editing and a masked password field', () => {
   assert.match(html, /data-view-target="passwords"/);

@@ -1,3 +1,5 @@
+const { fetchExtensionStoreImage, hydrateExtensionStoreImages } = require('./extension-store-images');
+
 const CHROME_EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
 const OFFICIAL_STORE_HOSTS = new Set([
   'chromewebstore.google.com',
@@ -247,10 +249,15 @@ async function searchOfficialExtensionStore(input = {}, requestFetch = fetch) {
   if (!keyword) throw new Error('请输入插件搜索关键词');
   const target = officialExtensionSearchUrl(keyword);
   const page = await fetchOfficialPage(target, requestFetch);
+  const extensions = await hydrateExtensionStoreImages(
+    parseOfficialStoreSearchHtml(page.html, keyword),
+    requestFetch,
+    ['.googleusercontent.com', '.gstatic.com'],
+  );
   return {
     keyword,
     page: 1,
-    extensions: parseOfficialStoreSearchHtml(page.html, keyword),
+    extensions,
     nextToken: '',
     hasMorePages: false,
     sourceType: 'chrome-web-store',
@@ -262,7 +269,11 @@ async function getOfficialExtensionStoreDetail(extensionId, requestFetch = fetch
   const id = normalizeOfficialExtensionId(extensionId) || normalizeExtensionId(extensionId);
   if (!id) throw new Error('Chrome Web Store 插件标识无效');
   const page = await fetchOfficialPage(officialExtensionDetailUrl(id), requestFetch);
-  return parseOfficialStoreDetailHtml(page.html, id);
+  const detail = parseOfficialStoreDetailHtml(page.html, id);
+  return {
+    ...detail,
+    image: await fetchExtensionStoreImage(detail.image, requestFetch, ['.googleusercontent.com', '.gstatic.com']),
+  };
 }
 
 module.exports = {

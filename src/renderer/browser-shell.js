@@ -23,7 +23,10 @@ const DEFAULT_NEW_TAB_SITES = [
   { id: 'gmail', name: 'Gmail', url: 'https://mail.google.com/', icon: 'M' },
 ];
 const DEFAULT_NEW_TAB_DISPLAY_MODE = 'immersive';
+const DEFAULT_NEW_TAB_BACKGROUND_OPACITY = 0.72;
+const DEFAULT_NEW_TAB_BACKGROUND_BLUR = 18;
 const PAGE_LOAD_TIMEOUT_MS = 20000;
+const AGENT_CONTEXT_COMPRESSION_RATIO = 0.9;
 const AGENT_HUMAN_CLICK = Object.freeze({
   moveStepPixels: 84,
   moveDelayMs: 5,
@@ -103,6 +106,7 @@ const agentSettingScope = document.querySelector('#agent-setting-scope');
 const agentTokenInput = document.querySelector('#agent-setting-token');
 const agentTokenStatus = document.querySelector('#agent-setting-token-status');
 const agentTokenClear = document.querySelector('#agent-setting-token-clear');
+const agentJevEnabledInput = document.querySelector('#agent-setting-jev-enabled');
 const agentContextInput = document.querySelector('#agent-setting-context');
 const agentOutputInput = document.querySelector('#agent-setting-output');
 const agentReasoningInput = document.querySelector('#agent-setting-reasoning');
@@ -111,8 +115,6 @@ const agentStepsInput = document.querySelector('#agent-setting-steps');
 let webview = null;
 let activeTabId = '';
 let shellInterfaceZoom = null;
-let guestZoomIndicatorTimer = 0;
-let guestZoomIndicatorView = null;
 let nextTabId = 1;
 const tabItems = [];
 const TAB_BASE_WIDTH = 180;
@@ -167,6 +169,7 @@ const agentToggle = document.querySelector('#agent-toggle');
 const agentPanel = document.querySelector('#agent-panel');
 const agentClose = document.querySelector('#agent-close');
 const agentState = document.querySelector('#agent-state');
+const agentTaskTimer = document.querySelector('#agent-task-timer');
 const agentContextTitle = document.querySelector('#agent-context-title');
 const agentContextUrl = document.querySelector('#agent-context-url');
 const agentHumanVerification = document.querySelector('#agent-human-verification');
@@ -176,9 +179,7 @@ const agentTranscript = document.querySelector('#agent-transcript');
 const agentComposerForm = document.querySelector('#agent-composer-form');
 const agentComposer = document.querySelector('#agent-composer');
 const agentSend = document.querySelector('#agent-send');
-const agentQueueSend = document.querySelector('#agent-queue-send');
-const agentSendNow = document.querySelector('#agent-send-now');
-const agentQuickActions = [...document.querySelectorAll('[data-agent-action]')];
+const agentContextUsage = document.querySelector('#agent-context-usage');
 const agentModelPicker = document.querySelector('#agent-model-picker');
 const agentModelPickerStatus = document.querySelector('#agent-model-picker-status');
 const agentModelOptions = document.querySelector('#agent-model-options');
@@ -205,24 +206,37 @@ let agentModelFetchSequence = 0;
 let agentThinkingRow = null;
 let agentWelcomeShown = false;
 let agentRetryController = null;
+let agentRequestCancel = null;
+let agentModelRequestId = '';
+let agentTaskTimerHandle = null;
+let agentTaskStartedAt = 0;
+let agentTaskElapsedMs = 0;
+let agentTaskTimerActive = false;
+let agentContextLastCompressionTokens = 0;
+let agentContextNoticeTimer = null;
 let searchEngineUrl = DEFAULT_SEARCH_ENGINE_URL;
 let searchEngines = DEFAULT_SEARCH_ENGINES.map((item) => ({ ...item }));
 let bookmarks = [];
 let bookmarkMenuContext = null;
 let bookmarkMenuTrigger = null;
+let bookmarkSubmenus = [];
+let bookmarkHoverTimer = 0;
+let bookmarkBarCommandVisible = false;
 let browserDownloads = [];
 let localListeners = [];
 let localListenersRequest = 0;
 let navigationHistory = [];
 let recognizedNewTabSites = [];
 let recentNewTabSearches = [];
+const newTabSiteFaviconCache = new Map();
+const newTabSiteFaviconRequests = new Map();
 let addressSuggestionIndex = -1;
 let addressEditing = false;
 let addressHiddenScheme = '';
 let addressPointerDown = null;
 let passwordPromptState = null;
 let passwordPromptTimer = 0;
-const ADDRESS_SCHEME_PATTERN = /^(https?:\/\/)/i;
+const ADDRESS_SCHEME_PATTERN = /^(?:https?|chrome):\/\//i;
 let browserSettings = {
   agentApiUrl: '',
   agentProtocolSuffix: '',
@@ -241,12 +255,15 @@ let browserSettings = {
   agentEnabled: true,
   agentSource: 'global',
   agentProtocols: [],
+  jevAutoJudgeEnabled: true,
   searchEngineUrl: DEFAULT_SEARCH_ENGINE_URL,
   searchEngines: DEFAULT_SEARCH_ENGINES.map((item) => ({ ...item })),
   bookmarkBarAlwaysVisible: false,
   newTabSites: DEFAULT_NEW_TAB_SITES.map((item) => ({ ...item })),
   newTabBanner: { type: 'image', source: '' },
   newTabDisplayMode: DEFAULT_NEW_TAB_DISPLAY_MODE,
+  newTabBackgroundOpacity: DEFAULT_NEW_TAB_BACKGROUND_OPACITY,
+  newTabBackgroundBlur: DEFAULT_NEW_TAB_BACKGROUND_BLUR,
   browserShortcuts: { reload: 'F5', devtools: 'F12' },
   mouseGesture: { enabled: true, button: 'right', sequence: ['right', 'left'], threshold: 80, action: 'back' },
 };
@@ -304,12 +321,20 @@ function looksLikeAddress(value) {
 function normalizedUrl(value) {
   const trimmed = String(value ?? '').trim();
   if (!trimmed) return 'about:newtab';
-  if (/^(?:https?:|about:|file:|data:|blob:|chrome-extension:|view-source:)/i.test(trimmed)) return trimmed;
+  if (/^(?:https?:|about:|file:|data:|blob:|chrome:|chrome-extension:|view-source:)/i.test(trimmed)) return trimmed;
   return looksLikeAddress(trimmed) ? `https://${trimmed}` : searchUrlFor(trimmed);
 }
 
 function isNewTabUrl(value) {
   return String(value || '').toLowerCase() === 'about:newtab' || String(value || '').toLowerCase() === 'about:blank';
+}
+
+function isHistoryUrl(value) {
+  return String(value || '').toLowerCase() === 'about:history';
+}
+
+function isShellPage(item) {
+  return Boolean(item?.isNewTab || item?.isHistory);
 }
 
 function bookmarkableUrl(value) {
@@ -343,7 +368,7 @@ function activeTabIsNewTab() {
 }
 
 function shouldShowBookmarkBar() {
-  return Boolean(browserSettings.bookmarkBarAlwaysVisible || activeTabIsNewTab());
+  return Boolean(bookmarkBarCommandVisible || browserSettings.bookmarkBarAlwaysVisible || activeTabIsNewTab());
 }
 
 function bookmarkChildren(parentId = '') {
@@ -435,6 +460,21 @@ function createBookmarkEntryButton(item, inMenu = false) {
   title.className = 'bookmark-bar-item-title';
   title.textContent = item.title || item.url;
   button.append(title);
+  if (inMenu && item.type === 'folder') {
+    button.setAttribute('aria-expanded', 'false');
+    const arrow = document.createElement('span');
+    arrow.className = 'bookmark-menu-submenu-arrow';
+    arrow.setAttribute('aria-hidden', 'true');
+    arrow.textContent = '›';
+    button.append(arrow);
+  }
+  button.addEventListener('auxclick', (event) => {
+    if (event.button !== 1) return;
+    const current = bookmarkById(button.dataset.bookmarkEntryId);
+    event.preventDefault();
+    event.stopPropagation();
+    if (current?.type === 'bookmark') openBookmarkEntry(current, { newTab: true });
+  });
   return button;
 }
 
@@ -456,6 +496,39 @@ function renderBookmarkBar() {
     bookmarkBar.append(empty);
   }
   for (const item of rootItems) bookmarkBar.append(createBookmarkEntryButton(item));
+  const overflow = document.createElement('button');
+  overflow.type = 'button';
+  overflow.className = 'bookmark-bar-overflow';
+  overflow.title = '显示更多收藏';
+  overflow.setAttribute('aria-label', '显示更多收藏');
+  overflow.setAttribute('aria-haspopup', 'menu');
+  overflow.setAttribute('aria-controls', 'bookmark-menu');
+  overflow.setAttribute('aria-expanded', 'false');
+  overflow.textContent = '»';
+  overflow.hidden = true;
+  bookmarkBar.append(overflow);
+  layoutBookmarkBarOverflow();
+}
+
+// 与 Chrome 一致：放不下的收藏收进末尾的“»”菜单，而不是让收藏栏横向滚动。
+function layoutBookmarkBarOverflow() {
+  if (!bookmarkBar || bookmarkBar.hidden) return;
+  const overflow = bookmarkBar.querySelector('.bookmark-bar-overflow');
+  if (!overflow) return;
+  const items = [...bookmarkBar.querySelectorAll('[data-bookmark-entry-id]')];
+  for (const item of items) item.hidden = false;
+  overflow.hidden = true;
+  if (!items.length) return;
+  const barBounds = bookmarkBar.getBoundingClientRect();
+  const limit = barBounds.right - (Number.parseFloat(getComputedStyle(bookmarkBar).paddingRight) || 0);
+  if (items.at(-1).getBoundingClientRect().right <= limit) return;
+  overflow.hidden = false;
+  const itemLimit = limit - overflow.getBoundingClientRect().width - 4;
+  let overflowing = false;
+  for (const item of items) {
+    overflowing = overflowing || item.getBoundingClientRect().right > itemLimit;
+    item.hidden = overflowing;
+  }
 }
 
 function applyBookmarkState(items) {
@@ -466,7 +539,7 @@ function applyBookmarkState(items) {
   if (addressSuggestions?.hidden === false) renderAddressSuggestions();
 }
 
-function appendBookmarkMenuAction(label, action, { disabled = false, destructive = false } = {}) {
+function appendBookmarkMenuAction(label, action, { disabled = false, destructive = false } = {}, panel = bookmarkMenu) {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = `bookmark-menu-action${destructive ? ' is-destructive' : ''}`;
@@ -474,15 +547,91 @@ function appendBookmarkMenuAction(label, action, { disabled = false, destructive
   button.dataset.bookmarkAction = action;
   button.textContent = label;
   button.disabled = disabled;
-  bookmarkMenu.append(button);
+  panel.append(button);
   return button;
 }
 
-function appendBookmarkMenuSeparator() {
+function appendBookmarkMenuSeparator(panel = bookmarkMenu) {
   const separator = document.createElement('div');
   separator.className = 'bookmark-menu-separator';
   separator.setAttribute('role', 'separator');
-  bookmarkMenu.append(separator);
+  panel.append(separator);
+}
+
+function appendBookmarkFolderContents(panel, folderId) {
+  panel.dataset.bookmarkFolderId = folderId;
+  const children = bookmarkChildren(folderId);
+  if (!children.length) {
+    const empty = document.createElement('div');
+    empty.className = 'bookmark-menu-empty';
+    empty.textContent = '（空）';
+    panel.append(empty);
+    return;
+  }
+  for (const item of children) panel.append(createBookmarkEntryButton(item, true));
+  const links = children.filter((item) => item.type === 'bookmark');
+  if (!links.length) return;
+  appendBookmarkMenuSeparator(panel);
+  appendBookmarkMenuAction(`全部在新标签页中打开（${links.length}）`, 'open-all', {}, panel).dataset.bookmarkFolderId = folderId;
+}
+
+function openAllBookmarksInFolder(folderId) {
+  const links = bookmarkChildren(folderId).filter((item) => item.type === 'bookmark');
+  closeBookmarkMenu();
+  for (const item of links) openBookmarkEntry(item, { newTab: true });
+}
+
+function bookmarkPanelLevel(panel) {
+  return panel && panel !== bookmarkMenu ? Number(panel.dataset.bookmarkLevel) || 0 : 0;
+}
+
+function closeBookmarkSubmenus(level = 0) {
+  while (bookmarkSubmenus.length > level) {
+    const submenu = bookmarkSubmenus.pop();
+    submenu.trigger.setAttribute('aria-expanded', 'false');
+    submenu.trigger.classList.remove('is-open');
+    submenu.panel.remove();
+  }
+}
+
+function openBookmarkSubmenu(folderId, entry, { focus = false } = {}) {
+  const parentPanel = entry?.closest('.bookmark-menu');
+  if (!parentPanel || bookmarkById(folderId)?.type !== 'folder') return null;
+  const level = bookmarkPanelLevel(parentPanel);
+  const existing = bookmarkSubmenus[level];
+  if (existing?.trigger === entry) {
+    closeBookmarkSubmenus(level + 1);
+    if (focus) existing.panel.querySelector('button:not(:disabled)')?.focus({ preventScroll: true });
+    return existing.panel;
+  }
+  closeBookmarkSubmenus(level);
+  const panel = document.createElement('div');
+  panel.className = 'bookmark-menu bookmark-submenu';
+  panel.setAttribute('role', 'menu');
+  panel.setAttribute('aria-label', bookmarkById(folderId).title);
+  panel.dataset.bookmarkLevel = String(level + 1);
+  appendBookmarkFolderContents(panel, folderId);
+  panel.addEventListener('click', handleBookmarkMenuClick);
+  panel.addEventListener('contextmenu', handleBookmarkMenuContextMenu);
+  panel.addEventListener('keydown', handleBookmarkMenuKeydown);
+  panel.addEventListener('mouseover', handleBookmarkMenuHover);
+  document.body.append(panel);
+  entry.setAttribute('aria-expanded', 'true');
+  entry.classList.add('is-open');
+  bookmarkSubmenus.push({ panel, trigger: entry, folderId });
+
+  const margin = 8;
+  const entryBounds = entry.getBoundingClientRect();
+  const parentBounds = parentPanel.getBoundingClientRect();
+  const bounds = panel.getBoundingClientRect();
+  let left = parentBounds.right - 3;
+  if (left + bounds.width > window.innerWidth - margin) left = parentBounds.left - bounds.width + 3;
+  left = Math.max(margin, left);
+  const top = Math.max(margin, Math.min(window.innerHeight - bounds.height - margin, entryBounds.top - 6));
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
+  if (focus) panel.querySelector('button:not(:disabled)')?.focus({ preventScroll: true });
+  return panel;
 }
 
 function showBookmarkMenu(context, x, y, trigger = null) {
@@ -491,6 +640,7 @@ function showBookmarkMenu(context, x, y, trigger = null) {
   bookmarkMenuContext = context;
   bookmarkMenuTrigger = trigger;
   bookmarkMenu.textContent = '';
+  delete bookmarkMenu.dataset.bookmarkFolderId;
 
   if (context.type === 'root' || context.type === 'create') {
     const currentUrl = bookmarkableUrl(currentWebviewUrl());
@@ -498,6 +648,18 @@ function showBookmarkMenu(context, x, y, trigger = null) {
     if (currentUrl) appendBookmarkMenuAction(alreadySaved ? '当前页面已收藏' : '添加当前页面', 'add-current', { disabled: alreadySaved });
     else appendBookmarkMenuAction('添加当前页面', 'add-current', { disabled: true });
     appendBookmarkMenuAction('新建文件夹', 'new-folder');
+    const children = bookmarkChildren(context.parentId || '');
+    if (children.length) {
+      appendBookmarkMenuSeparator();
+      for (const item of children) bookmarkMenu.append(createBookmarkEntryButton(item, true));
+    }
+  } else if (context.type === 'overflow') {
+    const hiddenIds = [...(bookmarkBar?.querySelectorAll('[data-bookmark-entry-id][hidden]') || [])].map((item) => item.dataset.bookmarkEntryId);
+    for (const id of hiddenIds) {
+      const item = bookmarkById(id);
+      if (item) bookmarkMenu.append(createBookmarkEntryButton(item, true));
+    }
+    bookmarkMenu.dataset.bookmarkFolderId = '';
   } else if (context.type === 'bookmark') {
     appendBookmarkMenuAction('在当前标签打开', 'open-current');
     appendBookmarkMenuAction('在新标签打开', 'open-new-tab');
@@ -507,30 +669,23 @@ function showBookmarkMenu(context, x, y, trigger = null) {
   } else if (context.type === 'folder') {
     const folder = bookmarkById(context.id);
     if (!folder || folder.type !== 'folder') return;
-    const heading = document.createElement('div');
-    heading.className = 'bookmark-menu-heading';
-    heading.textContent = folder.title;
-    bookmarkMenu.append(heading);
     if (context.showContents) {
-      if (folder.parentId) appendBookmarkMenuAction('返回上一级', 'open-folder-parent');
-      const children = bookmarkChildren(folder.id);
-      if (children.length) {
-        for (const item of children) bookmarkMenu.append(createBookmarkEntryButton(item, true));
-      } else {
-        const empty = document.createElement('div');
-        empty.className = 'bookmark-menu-empty';
-        empty.textContent = '此文件夹为空';
-        bookmarkMenu.append(empty);
-      }
-      appendBookmarkMenuSeparator();
+      // 左键展开文件夹只显示内容，管理操作放在右键菜单中，与 Chrome 一致。
+      appendBookmarkFolderContents(bookmarkMenu, folder.id);
     } else {
+      const heading = document.createElement('div');
+      heading.className = 'bookmark-menu-heading';
+      heading.textContent = folder.title;
+      bookmarkMenu.append(heading);
       appendBookmarkMenuAction('打开文件夹', 'open-folder');
+      const linkCount = bookmarkChildren(folder.id).filter((item) => item.type === 'bookmark').length;
+      appendBookmarkMenuAction(`全部在新标签页中打开（${linkCount}）`, 'open-all', { disabled: !linkCount });
       appendBookmarkMenuSeparator();
+      appendBookmarkMenuAction('在文件夹中新建收藏', 'new-bookmark');
+      appendBookmarkMenuAction('新建文件夹', 'new-folder');
+      appendBookmarkMenuAction('重命名文件夹', 'rename-folder');
+      appendBookmarkMenuAction('删除文件夹', 'delete-folder', { destructive: true });
     }
-    appendBookmarkMenuAction('在文件夹中新建收藏', 'new-bookmark');
-    appendBookmarkMenuAction('新建文件夹', 'new-folder');
-    appendBookmarkMenuAction('重命名文件夹', 'rename-folder');
-    appendBookmarkMenuAction('删除文件夹', 'delete-folder', { destructive: true });
   }
 
   bookmarkMenu.hidden = false;
@@ -547,6 +702,8 @@ function showBookmarkMenu(context, x, y, trigger = null) {
 }
 
 function closeBookmarkMenu(restoreFocus = false) {
+  window.clearTimeout(bookmarkHoverTimer);
+  closeBookmarkSubmenus(0);
   const trigger = bookmarkMenuTrigger;
   if (bookmarkMenuTrigger?.getAttribute('aria-haspopup') === 'menu') bookmarkMenuTrigger.setAttribute('aria-expanded', 'false');
   bookmarkMenuTrigger = null;
@@ -563,6 +720,50 @@ function openBookmarkFolder(folderId, trigger = null) {
   const x = bounds?.left ?? 12;
   const y = bookmarkMenu?.hidden === false && !trigger ? (bounds?.top ?? 50) : (bounds?.bottom ?? 50);
   showBookmarkMenu({ type: 'folder', id: folderId, showContents: true }, x, y, trigger);
+}
+
+function bookmarkOpensInNewTab(event) {
+  return event?.button === 1 || event?.ctrlKey === true || event?.metaKey === true;
+}
+
+function openBookmarkEntry(item, { newTab = false } = {}) {
+  if (!item || item.type !== 'bookmark') return false;
+  const url = bookmarkableUrl(item.url);
+  if (!url) {
+    closeBookmarkMenu();
+    setShellStatus('收藏地址无效，无法打开', 'error');
+    return false;
+  }
+  closeBookmarkMenu();
+  if (newTab) {
+    const created = createTab(url);
+    if (!created) {
+      setShellStatus('无法创建新标签页', 'error');
+      return false;
+    }
+    return true;
+  }
+  navigateAddress(url);
+  return true;
+}
+
+function handleBookmarkEntryClick(event, item, button) {
+  if (!item) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (item.type === 'folder') {
+    if (button?.closest('.bookmark-menu')) {
+      openBookmarkSubmenu(item.id, button);
+      return;
+    }
+    if (bookmarkMenu?.hidden === false && bookmarkMenuTrigger === button) {
+      closeBookmarkMenu();
+      return;
+    }
+    openBookmarkFolder(item.id, button);
+    return;
+  }
+  openBookmarkEntry(item, { newTab: bookmarkOpensInNewTab(event) });
 }
 
 function showBookmarkContextMenu(event, item) {
@@ -774,6 +975,7 @@ function recordNavigation(url, title = '') {
     { url: normalized, title: title || tabFallbackTitle(normalized) },
     ...navigationHistory.filter((item) => item.url !== normalized),
   ].slice(0, 30);
+  for (const item of tabItems) if (item.isHistory) renderHistoryPage(item);
 }
 
 function tabFallbackTitle(url) {
@@ -802,6 +1004,50 @@ function normalizeNewTabDisplayMode(value) {
   return String(value || '').trim().toLowerCase() === 'minimal' ? 'minimal' : DEFAULT_NEW_TAB_DISPLAY_MODE;
 }
 
+function normalizeNewTabBackgroundOpacity(value, fallback = DEFAULT_NEW_TAB_BACKGROUND_OPACITY) {
+  const inherited = Number.isFinite(Number(fallback))
+    ? Math.round(Math.min(1, Math.max(0, Number(fallback))) * 100) / 100
+    : DEFAULT_NEW_TAB_BACKGROUND_OPACITY;
+  const number = Number(value);
+  return Number.isFinite(number)
+    ? Math.round(Math.min(1, Math.max(0, number)) * 100) / 100
+    : inherited;
+}
+
+function normalizeNewTabBackgroundBlur(value, fallback = DEFAULT_NEW_TAB_BACKGROUND_BLUR) {
+  const inherited = Number.isFinite(Number(fallback))
+    ? Math.round(Math.min(40, Math.max(0, Number(fallback))))
+    : DEFAULT_NEW_TAB_BACKGROUND_BLUR;
+  const number = Number(value);
+  return Number.isFinite(number)
+    ? Math.round(Math.min(40, Math.max(0, number)))
+    : inherited;
+}
+
+function newTabBackgroundValues(settings = browserSettings) {
+  const theme = settings?.theme && typeof settings.theme === 'object' ? settings.theme : {};
+  const opacityFallback = normalizeNewTabBackgroundOpacity(theme.backgroundOpacity, DEFAULT_NEW_TAB_BACKGROUND_OPACITY);
+  const blurFallback = normalizeNewTabBackgroundBlur(theme.blur, DEFAULT_NEW_TAB_BACKGROUND_BLUR);
+  return {
+    opacity: normalizeNewTabBackgroundOpacity(settings?.newTabBackgroundOpacity, opacityFallback),
+    blur: normalizeNewTabBackgroundBlur(settings?.newTabBackgroundBlur, blurFallback),
+  };
+}
+
+function syncNewTabDisplayControls() {
+  for (const control of document.querySelectorAll('.new-tab-display-controls')) {
+    control.syncAppearance?.();
+  }
+}
+
+function applyNewTabAppearance() {
+  const values = newTabBackgroundValues();
+  const root = document.documentElement;
+  root.style.setProperty('--shell-new-tab-opacity', String(values.opacity));
+  root.style.setProperty('--shell-new-tab-blur', `${values.blur}px`);
+  syncNewTabDisplayControls();
+}
+
 async function saveNewTabDisplayMode(value) {
   const nextMode = normalizeNewTabDisplayMode(value);
   const previousMode = normalizeNewTabDisplayMode(browserSettings.newTabDisplayMode);
@@ -820,7 +1066,30 @@ async function saveNewTabDisplayMode(value) {
   }
 }
 
-function createNewTabDisplayControl() {
+let newTabBackgroundSaveQueue = Promise.resolve();
+
+function saveNewTabBackgroundSettings() {
+  const values = newTabBackgroundValues();
+  browserSettings.newTabBackgroundOpacity = values.opacity;
+  browserSettings.newTabBackgroundBlur = values.blur;
+  newTabBackgroundSaveQueue = newTabBackgroundSaveQueue
+    .catch(() => {})
+    .then(async () => {
+      try {
+        const result = await window.shellApi?.saveSettings?.({
+          newTabBackgroundOpacity: values.opacity,
+          newTabBackgroundBlur: values.blur,
+        });
+        if (result?.ok === false) throw new Error(result.error || '背景效果保存失败');
+        if (result?.settings) renderBrowserSettings(result.settings);
+      } catch (error) {
+        setShellStatus(`背景效果保存失败：${error.message || '未知错误'}`, 'error');
+      }
+    });
+  return newTabBackgroundSaveQueue;
+}
+
+function createNewTabDisplayControl(controlId = '') {
   const control = document.createElement('div');
   control.className = 'new-tab-display-controls';
   const button = document.createElement('button');
@@ -849,6 +1118,59 @@ function createNewTabDisplayControl() {
     option.innerHTML = `<svg class="shell-icon" aria-hidden="true"><use href="#${mode.icon}"></use></svg><span>${mode.label}</span>`;
     menu.append(option);
   }
+  const appearanceSettings = document.createElement('div');
+  appearanceSettings.className = 'new-tab-display-settings';
+  appearanceSettings.setAttribute('role', 'group');
+  appearanceSettings.setAttribute('aria-label', '沉浸背景效果');
+  const createAppearanceField = ({ key, label, min, max, step, format }) => {
+    const field = document.createElement('label');
+    field.className = 'new-tab-display-field';
+    const heading = document.createElement('span');
+    const title = document.createElement('span');
+    title.textContent = label;
+    const output = document.createElement('output');
+    const inputId = `new-tab-display-${key}-${controlId || 'current'}`;
+    output.htmlFor = inputId;
+    heading.append(title, output);
+    const input = document.createElement('input');
+    input.id = inputId;
+    input.type = 'range';
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    input.dataset.newTabAppearance = key;
+    input.setAttribute('aria-label', label);
+    input.addEventListener('input', () => {
+      const values = newTabBackgroundValues();
+      const next = Number(input.value);
+      if (key === 'newTabBackgroundOpacity') values.opacity = normalizeNewTabBackgroundOpacity(next);
+      if (key === 'newTabBackgroundBlur') values.blur = normalizeNewTabBackgroundBlur(next);
+      browserSettings.newTabBackgroundOpacity = values.opacity;
+      browserSettings.newTabBackgroundBlur = values.blur;
+      applyNewTabAppearance();
+    });
+    input.addEventListener('change', () => { void saveNewTabBackgroundSettings(); });
+    field.append(heading, input);
+    appearanceSettings.append(field);
+    return { input, output, format };
+  };
+  const opacityControl = createAppearanceField({
+    key: 'newTabBackgroundOpacity',
+    label: '背景不透明度',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    format: (value) => `${Math.round(value * 100)}%`,
+  });
+  const blurControl = createAppearanceField({
+    key: 'newTabBackgroundBlur',
+    label: '背景模糊',
+    min: 0,
+    max: 40,
+    step: 1,
+    format: (value) => `${value}px`,
+  });
+  menu.append(appearanceSettings);
   const sync = () => {
     const activeMode = normalizeNewTabDisplayMode(browserSettings.newTabDisplayMode);
     button.dataset.mode = activeMode;
@@ -857,6 +1179,13 @@ function createNewTabDisplayControl() {
       option.classList.toggle('is-selected', selected);
       option.setAttribute('aria-checked', selected ? 'true' : 'false');
     }
+  };
+  const syncAppearance = () => {
+    const values = newTabBackgroundValues();
+    opacityControl.input.value = String(values.opacity);
+    opacityControl.output.textContent = opacityControl.format(values.opacity);
+    blurControl.input.value = String(values.blur);
+    blurControl.output.textContent = blurControl.format(values.blur);
   };
   button.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -872,8 +1201,10 @@ function createNewTabDisplayControl() {
     button.setAttribute('aria-expanded', 'false');
     void saveNewTabDisplayMode(option.dataset.newTabDisplayMode);
   });
+  control.syncAppearance = syncAppearance;
   control.append(button, menu);
   sync();
+  syncAppearance();
   return control;
 }
 
@@ -884,13 +1215,59 @@ function createNewTabSiteButton(site) {
   button.title = site.url;
   const icon = document.createElement('span');
   icon.className = 'new-tab-site-icon';
-  icon.textContent = site.icon || '↗';
+  const image = document.createElement('img');
+  image.className = 'new-tab-site-favicon';
+  image.alt = '';
+  image.decoding = 'async';
+  image.loading = 'lazy';
+  image.hidden = true;
+  const fallback = document.createElement('span');
+  fallback.className = 'new-tab-site-fallback';
+  fallback.textContent = site.icon || '↗';
+  image.addEventListener('load', () => {
+    image.hidden = false;
+    fallback.hidden = true;
+    icon.classList.add('has-image');
+  });
+  image.addEventListener('error', () => {
+    image.hidden = true;
+    fallback.hidden = false;
+    icon.classList.remove('has-image');
+  });
+  icon.append(image, fallback);
   const name = document.createElement('span');
   name.className = 'new-tab-site-name';
   name.textContent = site.name || site.url;
   button.append(icon, name);
+  void loadNewTabSiteFavicon(site).then((favicon) => {
+    if (!favicon || !image.isConnected) return;
+    image.src = favicon;
+  });
   button.addEventListener('click', () => navigateAddress(site.url));
   return button;
+}
+
+async function loadNewTabSiteFavicon(site) {
+  if (!site || !window.shellApi?.getPageFavicon) return '';
+  const url = String(site.url || '').trim();
+  if (!url) return '';
+  if (newTabSiteFaviconCache.has(url)) return newTabSiteFaviconCache.get(url);
+  const pending = newTabSiteFaviconRequests.get(url);
+  if (pending) return pending;
+  const request = window.shellApi.getPageFavicon({
+    url,
+    favicon: typeof site.favicon === 'string' ? site.favicon : '',
+  }).then((result) => {
+    const favicon = /^data:image\//i.test(result?.favicon || '') ? result.favicon : '';
+    if (favicon) newTabSiteFaviconCache.set(url, favicon);
+    return favicon;
+  }).catch(() => '');
+  newTabSiteFaviconRequests.set(url, request);
+  try {
+    return await request;
+  } finally {
+    if (newTabSiteFaviconRequests.get(url) === request) newTabSiteFaviconRequests.delete(url);
+  }
 }
 
 function newTabSiteHost(url) {
@@ -988,7 +1365,7 @@ function renderNewTabPage(item) {
   const bannerSource = String(banner.source || '').trim();
   const themeSource = String(browserSettings.theme?.backgroundImage || '').trim();
   const backgroundSource = themeSource || bannerSource;
-  const displayControl = createNewTabDisplayControl();
+  const displayControl = createNewTabDisplayControl(item.id);
   root.append(displayControl);
   if (displayMode === 'immersive' && backgroundSource && bannerSourceValid(backgroundSource)) {
     const media = document.createElement(mediaKindForBanner({ type: themeSource ? 'image' : banner.type, source: backgroundSource }) === 'video' ? 'video' : 'img');
@@ -1092,7 +1469,7 @@ function renderNewTabPage(item) {
   add.innerHTML = '<span class="new-tab-site-icon">+</span><span class="new-tab-site-name">添加</span>';
   add.addEventListener('click', () => void promptNewTabSite());
   sites.append(add);
-  content.append(sites);
+  content.append(searchForm, sites);
 
   let selectedSearchIndex = -1;
   let searchInputFocused = false;
@@ -1197,6 +1574,116 @@ function renderNewTabPage(item) {
   root.append(content);
 }
 
+function renderHistoryPage(item, query = '') {
+  if (!item?.isHistory || !item.newTabView) return;
+  const root = item.newTabView;
+  root.replaceChildren();
+  root.className = 'history-view';
+  root.setAttribute('aria-label', '历史记录');
+
+  const header = document.createElement('header');
+  header.className = 'history-view-header';
+  const heading = document.createElement('div');
+  heading.className = 'history-view-heading';
+  const title = document.createElement('h1');
+  title.textContent = '历史记录';
+  const summary = document.createElement('p');
+  summary.textContent = '当前浏览器环境最近访问的页面';
+  heading.append(title, summary);
+  const clear = document.createElement('button');
+  clear.type = 'button';
+  clear.className = 'history-view-clear';
+  clear.textContent = '清空历史记录';
+  clear.addEventListener('click', () => {
+    navigationHistory = [];
+    for (const historyTab of tabItems) if (historyTab.isHistory) renderHistoryPage(historyTab);
+    setShellStatus('历史记录已清空', 'success');
+  });
+  header.append(heading, clear);
+
+  const controls = document.createElement('label');
+  controls.className = 'history-view-search';
+  const searchIcon = createShellIcon('shell-icon-search');
+  const input = document.createElement('input');
+  input.type = 'search';
+  input.autocomplete = 'off';
+  input.placeholder = '搜索历史记录';
+  input.setAttribute('aria-label', '搜索历史记录');
+  input.value = query;
+  controls.append(searchIcon, input);
+
+  const list = document.createElement('div');
+  list.className = 'history-view-list';
+  const needle = String(query || '').trim().toLocaleLowerCase();
+  const records = navigationHistory.filter((record) => (
+    !needle || `${record.title || ''} ${record.url || ''}`.toLocaleLowerCase().includes(needle)
+  ));
+  if (!records.length) {
+    const empty = document.createElement('p');
+    empty.className = 'history-view-empty';
+    empty.textContent = navigationHistory.length ? '没有匹配的历史记录' : '暂无历史记录';
+    list.append(empty);
+  }
+  for (const record of records) {
+    const row = document.createElement('article');
+    row.className = 'history-view-row';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'history-view-entry';
+    open.title = record.url;
+    open.addEventListener('click', () => navigateAddress(record.url));
+    const icon = createShellIcon('shell-icon-history', 'history-view-icon');
+    const copy = document.createElement('span');
+    copy.className = 'history-view-copy';
+    const recordTitle = document.createElement('strong');
+    recordTitle.textContent = record.title || tabFallbackTitle(record.url);
+    const recordUrl = document.createElement('span');
+    recordUrl.textContent = record.url;
+    copy.append(recordTitle, recordUrl);
+    open.append(icon, copy);
+    row.append(open);
+    list.append(row);
+  }
+  input.addEventListener('input', () => renderHistoryPage(item, input.value));
+  root.append(header, controls, list);
+}
+
+function openHistoryPage() {
+  const item = activeTab();
+  if (!item) return;
+  if (item.isHistory) {
+    renderHistoryPage(item);
+    activateTab(item.id);
+    return;
+  }
+  resetTabToHistory(item);
+  renderHistoryPage(item);
+  activateTab(item.id);
+}
+
+function resetTabToHistory(item) {
+  if (!item) return;
+  if (passwordPromptState?.itemId === item.id) hidePasswordSavePrompt();
+  clearPageLoadTimer(item);
+  try { item.view?.stop?.(); } catch {}
+  item.view?.remove?.();
+  item.view = null;
+  item.isNewTab = false;
+  item.isHistory = true;
+  item.url = 'about:history';
+  item.title = '历史记录';
+  item.agentView = null;
+  clearTabFavicon(item);
+  resetPageDominantColor(item);
+  item.accentSource = '';
+  if (!item.newTabView) {
+    item.newTabView = document.createElement('section');
+    pages?.append(item.newTabView);
+  }
+  item.newTabView.className = 'history-view';
+  item.newTabView.setAttribute('aria-label', '历史记录');
+}
+
 function newTabAgentRoot(item) {
   return item?.isNewTab ? item.newTabView : null;
 }
@@ -1253,7 +1740,7 @@ function newTabAgentScroll(item, position) {
 function newTabAgentNode(item, selector) {
   const root = newTabAgentRoot(item);
   if (!root) return null;
-  try { return root.querySelector(String(selector || '').slice(0, 500)); } catch { return null; }
+  try { return root.querySelector(String(selector || '')); } catch { return null; }
 }
 
 function newTabAgentClick(item, selector) {
@@ -1267,7 +1754,7 @@ function newTabAgentClick(item, selector) {
 function newTabAgentFill(item, selector, value) {
   const node = newTabAgentNode(item, selector);
   if (!node) return { ok: false, error: '未找到匹配元素' };
-  const nextValue = String(value || '').slice(0, 2000);
+  const nextValue = String(value || '');
   if ('value' in node) {
     node.focus();
     node.value = nextValue;
@@ -1341,7 +1828,7 @@ function newTabAgentInsertText(item, value) {
     ? focused
     : root?.querySelector?.('.new-tab-search input');
   if (!node) throw new Error('当前页面没有可输入的文本框');
-  const text = String(value || '').slice(0, 4000);
+  const text = String(value || '');
   if ('value' in node) {
     const start = Number.isInteger(node.selectionStart) ? node.selectionStart : node.value.length;
     const end = Number.isInteger(node.selectionEnd) ? node.selectionEnd : start;
@@ -1517,6 +2004,7 @@ function syncTabActiveSurface() {
   const active = tabs?.querySelector('.browser-tab.is-active');
   if (!activeSurface || !active) return;
   activeSurface.style.setProperty('--tab-accent', active.dataset.tabAccent || '#6d96ff');
+  activeSurface.style.setProperty('--tab-page-color', active.dataset.pageColor || '');
   activeSurface.style.width = `${active.offsetWidth}px`;
   activeSurface.style.transform = `translate3d(${active.offsetLeft}px, 0, 0)`;
 }
@@ -1525,6 +2013,121 @@ function fallbackTabAccent(seed = '') {
   let hash = 0;
   for (const character of String(seed)) hash = (hash * 31 + character.charCodeAt(0)) | 0;
   return `hsl(${Math.abs(hash) % 360} 68% 58%)`;
+}
+
+function tabTextColor(color) {
+  const match = String(color || '').match(/rgba?\(\s*([\d.]+)[, ]+\s*([\d.]+)[, ]+\s*([\d.]+)/i);
+  if (!match) return '#eef4ff';
+  const channels = match.slice(1, 4).map((value) => Math.max(0, Math.min(255, Number(value))));
+  if (channels.some((value) => !Number.isFinite(value))) return '#eef4ff';
+  const [red, green, blue] = channels.map((value) => {
+    const normalized = value / 255;
+    return normalized <= .03928 ? normalized / 12.92 : ((normalized + .055) / 1.055) ** 2.4;
+  });
+  return .2126 * red + .7152 * green + .0722 * blue > .179 ? '#000000' : '#ffffff';
+}
+
+function resetPageDominantColor(item) {
+  if (!item) return;
+  item.pageColor = '';
+  item.pageColorRequestKey = '';
+  item.pageColorRequestId = (item.pageColorRequestId || 0) + 1;
+  item.pageColorGeneration = (item.pageColorGeneration || 0) + 1;
+  item.accent = item.faviconAccent || fallbackTabAccent(item.faviconSource || item.favicon || item.url || item.id);
+}
+
+function dominantColorFromNativeImage(image) {
+  if (!image || typeof image.toDataURL !== 'function' || typeof Image !== 'function') return Promise.resolve('');
+  let dataUrl = '';
+  try { dataUrl = image.toDataURL(); } catch { return Promise.resolve(''); }
+  if (!/^data:image\//i.test(dataUrl)) return Promise.resolve('');
+  return new Promise((resolve) => {
+    const source = new Image();
+    source.onload = () => {
+      try {
+        const width = 48;
+        const height = 32;
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        if (!context) {
+          resolve('');
+          return;
+        }
+        context.drawImage(source, 0, 0, width, height);
+        const pixels = context.getImageData(0, 0, width, height).data;
+        const buckets = new Map();
+        for (let index = 0; index < pixels.length; index += 4) {
+          const alpha = pixels[index + 3] / 255;
+          if (alpha < .18) continue;
+          const quantize = (value) => Math.max(0, Math.min(255, Math.round(value / 24) * 24));
+          const red = quantize(pixels[index]);
+          const green = quantize(pixels[index + 1]);
+          const blue = quantize(pixels[index + 2]);
+          const key = `${red},${green},${blue}`;
+          const bucket = buckets.get(key) || { weight: 0, red: 0, green: 0, blue: 0 };
+          bucket.weight += alpha;
+          bucket.red += pixels[index] * alpha;
+          bucket.green += pixels[index + 1] * alpha;
+          bucket.blue += pixels[index + 2] * alpha;
+          buckets.set(key, bucket);
+        }
+        let bestKey = '';
+        let bestWeight = 0;
+        for (const [key, bucket] of buckets) {
+          if (bucket.weight > bestWeight) {
+            bestKey = key;
+            bestWeight = bucket.weight;
+          }
+        }
+        if (!bestKey) {
+          resolve('');
+          return;
+        }
+        const best = buckets.get(bestKey);
+        resolve(`rgb(${['red', 'green', 'blue'].map((channel) => Math.round(best[channel] / best.weight)).join(' ')})`);
+      } catch {
+        resolve('');
+      } finally {
+        source.onload = null;
+        source.onerror = null;
+      }
+    };
+    source.onerror = () => resolve('');
+    source.src = dataUrl;
+  });
+}
+
+async function refreshPageDominantColor(item) {
+  if (!item || item.isNewTab || !item.domReady || !item.view || item.view.hidden || typeof item.view.capturePage !== 'function') return;
+  const view = item.view;
+  try {
+    if (typeof view.isLoading === 'function' && view.isLoading()) return;
+  } catch {
+    return;
+  }
+  const pageUrl = String(item.url || '').trim();
+  const generation = Number(item.pageColorGeneration || 0);
+  const requestKey = `${pageUrl}\n${generation}`;
+  if (!pageUrl || item.pageColorRequestKey === requestKey) return;
+  item.pageColorRequestKey = requestKey;
+  const requestId = (item.pageColorRequestId || 0) + 1;
+  item.pageColorRequestId = requestId;
+  try {
+    await new Promise((resolve) => window.setTimeout(resolve, 48));
+    if (item.view !== view || view.hidden || !tabItems.includes(item) || item.pageColorRequestId !== requestId) return;
+    const image = await view.capturePage();
+    const color = await dominantColorFromNativeImage(image);
+    if (!color || item.view !== view || !tabItems.includes(item) || item.pageColorRequestId !== requestId || item.pageColorGeneration !== generation || item.url !== pageUrl) return;
+    item.pageColor = color;
+    item.accent = color;
+    renderTabs();
+  } catch {
+    // Page screenshots are best-effort; the favicon/theme fallback remains active.
+  } finally {
+    if (item.pageColorRequestId === requestId && !item.pageColor) item.pageColorRequestKey = '';
+  }
 }
 
 function tabIconSource(item) {
@@ -1536,6 +2139,7 @@ function clearTabFavicon(item) {
   item.favicon = '';
   item.faviconData = '';
   item.faviconSource = '';
+  item.faviconAccent = '';
   item.faviconRequestKey = '';
   item.faviconRequestId = (item.faviconRequestId || 0) + 1;
 }
@@ -1568,7 +2172,8 @@ function extractFaviconAccent(item) {
   const source = tabIconSource(item);
   if (!item || !source || item.accentSource === source || typeof Image !== 'function') return;
   item.accentSource = source;
-  item.accent = fallbackTabAccent(source);
+  item.faviconAccent = fallbackTabAccent(source);
+  if (!item.pageColor) item.accent = item.faviconAccent;
   const image = new Image();
   image.crossOrigin = 'anonymous';
   image.decoding = 'async';
@@ -1598,8 +2203,11 @@ function extractFaviconAccent(item) {
         weight += pixelWeight;
       }
       if (!weight || tabIconSource(item) !== source) return;
-      item.accent = `rgb(${Math.round(red / weight)} ${Math.round(green / weight)} ${Math.round(blue / weight)})`;
-      renderTabs();
+      item.faviconAccent = `rgb(${Math.round(red / weight)} ${Math.round(green / weight)} ${Math.round(blue / weight)})`;
+      if (!item.pageColor) {
+        item.accent = item.faviconAccent;
+        renderTabs();
+      }
     } catch {
       // Cross-origin favicons can taint the canvas; keep the deterministic fallback.
     }
@@ -1614,6 +2222,11 @@ function renderFallbackTabIcon(container) {
 }
 
 function renderTabIcon(container, item) {
+  if (item?.isHistory) {
+    container.textContent = '';
+    container.append(createShellIcon('shell-icon-history'));
+    return;
+  }
   const source = tabIconSource(item);
   if (!source) {
     renderFallbackTabIcon(container);
@@ -1851,7 +2464,10 @@ function renderTabs() {
     tab.setAttribute('aria-selected', item.id === activeTabId ? 'true' : 'false');
     tab.dataset.tabId = item.id;
     tab.dataset.tabAccent = item.accent || fallbackTabAccent(item.favicon || item.url || item.id);
+    tab.dataset.pageColor = item.pageColor || '';
+    tab.dataset.tabText = item.pageColor ? tabTextColor(item.pageColor) : '#eef4ff';
     tab.style.setProperty('--tab-accent', tab.dataset.tabAccent);
+    tab.style.setProperty('--tab-text', tab.dataset.tabText);
     tab.title = item.title;
     tab.setAttribute('aria-label', item.title);
     const icon = document.createElement('span');
@@ -2077,6 +2693,7 @@ function activateTab(tabId, focusAddress = false) {
   activeTabId = item.id;
   if (item.isNewTab && !item.agentView) item.agentView = createNewTabAgentView(item);
   webview = item.isNewTab ? item.agentView : item.view;
+  if (item.isHistory) webview = null;
   syncGuestZoomFactor();
   agentPointer = null;
   lastPageTitle = item.title === '新标签页' ? '' : item.title;
@@ -2085,6 +2702,7 @@ function activateTab(tabId, focusAddress = false) {
     if (candidate.newTabView) candidate.newTabView.hidden = candidate.id !== activeTabId;
   }
   renderTabs();
+  if (!isShellPage(item)) void refreshPageDominantColor(item);
   syncAddress();
   syncAgentContext();
   renderBookmarkToggle();
@@ -2105,84 +2723,21 @@ function setGuestZoomFactor(view, factor) {
   }
 }
 
-function hideGuestZoomIndicator(view) {
-  if (!view || typeof view.executeJavaScript !== 'function') return;
-  const script = `(() => {
-    const timerKey = '__cpb_zoom_indicator_timer__';
-    if (window[timerKey]) {
-      window.clearTimeout(window[timerKey]);
-      window[timerKey] = 0;
-    }
-    const node = document.getElementById('__cpb_zoom_indicator__');
-    if (node) node.remove();
-  })()`;
-  try {
-    void Promise.resolve(view.executeJavaScript(script, true)).catch(() => {});
-  } catch {
-    // The guest may be navigating or closing while the shell hides the badge.
-  }
-}
-
-function showGuestZoomIndicator(view, percentage) {
-  if (!view || typeof view.executeJavaScript !== 'function' || !Number.isFinite(percentage)) return;
-  if (guestZoomIndicatorView && guestZoomIndicatorView !== view) hideGuestZoomIndicator(guestZoomIndicatorView);
-  guestZoomIndicatorView = view;
-  window.clearTimeout(guestZoomIndicatorTimer);
-  const label = `${Math.round(percentage)}%`;
-  const script = `(() => {
-    const id = '__cpb_zoom_indicator__';
-    let node = document.getElementById(id);
-    if (!node) {
-      node = document.createElement('div');
-      node.id = id;
-      node.setAttribute('role', 'status');
-      node.setAttribute('aria-live', 'polite');
-      Object.assign(node.style, {
-        position: 'fixed',
-        top: '16px',
-        right: '18px',
-        zIndex: '2147483647',
-        display: 'grid',
-        placeItems: 'center',
-        minWidth: '68px',
-        minHeight: '36px',
-        padding: '0 12px',
-        color: '#edf3ff',
-        background: 'rgba(24, 34, 50, .96)',
-        border: '1px solid #465673',
-        borderRadius: '6px',
-        boxShadow: '0 10px 28px rgba(0, 0, 0, .34)',
-        font: '650 13px/1.2 system-ui, sans-serif',
-        fontVariantNumeric: 'tabular-nums',
-        pointerEvents: 'none',
-      });
-      (document.body || document.documentElement).appendChild(node);
-    }
-    node.textContent = ${JSON.stringify(label)};
-    node.hidden = false;
-    node.style.display = 'grid';
-    const timerKey = '__cpb_zoom_indicator_timer__';
-    if (window[timerKey]) window.clearTimeout(window[timerKey]);
-    window[timerKey] = window.setTimeout(() => {
-      const current = document.getElementById(id);
-      if (current) current.remove();
-      window[timerKey] = 0;
-    }, 2500);
-  })()`;
-  try {
-    void Promise.resolve(view.executeJavaScript(script, true)).catch(() => {});
-  } catch {
-    // The guest may be navigating or closing while the shell handles input.
-  }
-  guestZoomIndicatorTimer = window.setTimeout(() => {
-    hideGuestZoomIndicator(view);
-    if (guestZoomIndicatorView === view) guestZoomIndicatorView = null;
-  }, 2500);
+function setNewTabZoomFactor(view, factor) {
+  if (!view || !Number.isFinite(factor)) return;
+  const bounded = Math.max(.5, Math.min(2, factor));
+  view.style.setProperty('--new-tab-zoom', String(bounded));
 }
 
 function syncGuestZoomFactor(view = webview) {
   const percentage = shellInterfaceZoom?.getPercentage?.();
   if (!Number.isFinite(percentage)) return;
+  const item = activeTab();
+  if (item?.isNewTab) {
+    setNewTabZoomFactor(item.newTabView, percentage / 100);
+    return;
+  }
+  if (item?.isHistory) return;
   setGuestZoomFactor(view, percentage / 100);
 }
 
@@ -2207,7 +2762,7 @@ function sendGuestPasswordMessage(item, channel, payload) {
 async function handleGuestPasswordMessage(item, event) {
   const channel = event?.channel;
   const input = event?.args?.[0] && typeof event.args[0] === 'object' ? event.args[0] : {};
-  if (!channel || !channel.startsWith('password-vault:') || item?.isNewTab) return;
+  if (!channel || !channel.startsWith('password-vault:') || isShellPage(item)) return;
   const url = guestPageUrl(item);
   if (channel === 'password-vault:dismiss') {
     if (passwordPromptState?.itemId === item.id) hidePasswordSavePrompt();
@@ -2282,9 +2837,10 @@ function bindTabEvents(item) {
   });
   view.addEventListener('did-start-loading', () => {
     item.loadTimedOut = false;
+    item.domReady = false;
     clearTabFavicon(item);
+    resetPageDominantColor(item);
     item.accentSource = '';
-    item.accent = fallbackTabAccent(item.url || item.id);
     renderTabs();
     schedulePageLoadTimeout(item);
     if (item.id !== activeTabId) return;
@@ -2296,6 +2852,7 @@ function bindTabEvents(item) {
     if (event.isMainFrame === false || item.loadTimedOut) return;
     markPageLoadReady(item);
     void refreshTabFavicon(item);
+    void refreshPageDominantColor(item);
   });
   view.addEventListener('did-stop-loading', () => {
     if (item.loadTimedOut) {
@@ -2303,11 +2860,12 @@ function bindTabEvents(item) {
       return;
     }
     markPageLoadReady(item);
+    void refreshPageDominantColor(item);
   });
   view.addEventListener('did-navigate', (event) => {
     item.url = event.url || item.url;
+    resetPageDominantColor(item);
     item.accentSource = '';
-    item.accent = fallbackTabAccent(item.url || item.id);
     item.title = item.title === '新标签页' ? tabFallbackTitle(item.url) : item.title;
     recordNavigation(item.url, item.title);
     void recordCommonSiteVisit(item.url);
@@ -2318,7 +2876,11 @@ function bindTabEvents(item) {
     syncAgentContext();
   });
   view.addEventListener('did-navigate-in-page', (event) => {
+    if (event.isMainFrame === false) return;
     item.url = event.url || item.url;
+    resetPageDominantColor(item);
+    renderTabs();
+    void refreshPageDominantColor(item);
     if (item.id === activeTabId) syncAddress();
   });
   view.addEventListener('page-title-updated', (event) => {
@@ -2338,9 +2900,11 @@ function bindTabEvents(item) {
       item.faviconData = '';
       item.faviconSource = favicon;
     }
-    item.accentSource = '';
-    item.accent = fallbackTabAccent(tabIconSource(item) || item.url || item.id);
+    if (!item.pageColor) {
+      item.accent = item.faviconAccent || fallbackTabAccent(tabIconSource(item) || item.url || item.id);
+    }
     renderTabs();
+    item.accentSource = '';
     extractFaviconAccent(item);
     void refreshTabFavicon(item, favicon);
     if (item.favicon) void saveBookmarkFavicon(item.url, item.favicon);
@@ -2425,22 +2989,32 @@ function createTab(url = 'about:newtab', focusAddress = false) {
     favicon: '',
     faviconData: '',
     faviconSource: '',
+    faviconAccent: '',
     faviconRequestKey: '',
     faviconRequestId: 0,
     accent: fallbackTabAccent(normalized),
     accentSource: '',
+    pageColor: '',
+    pageColorRequestKey: '',
+    pageColorRequestId: 0,
+    pageColorGeneration: 0,
     isNewTab: isNewTabUrl(normalized),
+    isHistory: isHistoryUrl(normalized),
     view: null,
     newTabView: null,
     agentView: null,
   };
-  if (item.isNewTab) {
+  if (item.isHistory) item.title = '历史记录';
+  if (item.isNewTab || item.isHistory) {
     item.newTabView = document.createElement('section');
     item.newTabView.className = 'new-tab-view';
-    item.newTabView.setAttribute('aria-label', '新标签页');
+    item.newTabView.setAttribute('aria-label', item.isHistory ? '历史记录' : '新标签页');
     pages.append(item.newTabView);
-    renderNewTabPage(item);
-    item.agentView = createNewTabAgentView(item);
+    if (item.isHistory) renderHistoryPage(item);
+    else {
+      renderNewTabPage(item);
+      item.agentView = createNewTabAgentView(item);
+    }
   } else {
     item.view = document.createElement('webview');
     item.view.className = 'page-webview';
@@ -2458,11 +3032,12 @@ function createTab(url = 'about:newtab', focusAddress = false) {
 
 function ensureWebviewForTab(item) {
   if (!item) return null;
-  if (!item.isNewTab && item.view) return item.view;
+  if (!isShellPage(item) && item.view) return item.view;
   item.newTabView?.remove();
   item.newTabView = null;
   item.refreshNewTabSearchSuggestions = null;
   item.isNewTab = false;
+  item.isHistory = false;
   item.view = document.createElement('webview');
   item.view.className = 'page-webview';
   item.view.setAttribute('partition', partition);
@@ -2481,12 +3056,15 @@ function resetTabToNewTab(item) {
   try { item.view?.stop?.(); } catch {}
   item.view?.remove?.();
   item.view = null;
+  item.newTabView?.remove?.();
+  item.newTabView = null;
+  item.isHistory = false;
   item.isNewTab = true;
   item.url = 'about:newtab';
   item.title = '新标签页';
   clearTabFavicon(item);
+  resetPageDominantColor(item);
   item.accentSource = '';
-  item.accent = fallbackTabAccent(item.url || item.id);
   item.newTabView = document.createElement('section');
   item.newTabView.className = 'new-tab-view';
   item.newTabView.setAttribute('aria-label', '新标签页');
@@ -2524,10 +3102,10 @@ function agentTabSnapshot(item) {
   if (!item) return null;
   let url = item.url || 'about:newtab';
   let loading = false;
-  if (!item.isNewTab && item.view && typeof item.view.getURL === 'function') {
+  if (!isShellPage(item) && item.view && typeof item.view.getURL === 'function') {
     try { url = item.view.getURL() || url; } catch { /* The guest may be loading. */ }
   }
-  if (!item.isNewTab && item.view && typeof item.view.isLoading === 'function') {
+  if (!isShellPage(item) && item.view && typeof item.view.isLoading === 'function') {
     try { loading = Boolean(item.view.isLoading()); } catch { loading = true; }
   }
   return {
@@ -2580,6 +3158,12 @@ async function agentNavigate(input = {}) {
   if (!item) throw new Error('标签页不存在');
   activateTab(item.id);
   const url = normalizedUrl(input.url);
+  if (isHistoryUrl(url)) {
+    resetTabToHistory(item);
+    renderHistoryPage(item);
+    activateTab(item.id);
+    return { ok: true, type: 'navigate', tab: agentTabSnapshot(item), tabs: agentTabsSnapshot().tabs };
+  }
   if (isNewTabUrl(url)) {
     resetTabToNewTab(item);
     activateTab(item.id);
@@ -2587,10 +3171,10 @@ async function agentNavigate(input = {}) {
   }
   const hadView = Boolean(item.view && !item.isNewTab);
   item.url = url;
-  item.title = tabFallbackTitle(url);
+    item.title = tabFallbackTitle(url);
   clearTabFavicon(item);
+  resetPageDominantColor(item);
   item.accentSource = '';
-  item.accent = fallbackTabAccent(item.url || item.id);
   const targetView = ensureWebviewForTab(item);
   renderTabs();
   recordNavigation(url, item.title);
@@ -2606,8 +3190,11 @@ async function agentTabControl(input = {}) {
   activateTab(item.id);
   const action = String(input.action || '').trim().toLowerCase();
   const targetView = item.view;
-  if (!targetView || item.isNewTab) {
-    if (action === 'reload') void refreshNewTabPage(item);
+  if (!targetView || item.isNewTab || item.isHistory) {
+    if (action === 'reload') {
+      if (item.isHistory) renderHistoryPage(item);
+      else void refreshNewTabPage(item);
+    }
     return { ok: true, type: 'tab-control', action, tab: agentTabSnapshot(item), tabs: agentTabsSnapshot().tabs };
   }
   if (action === 'back') {
@@ -2646,7 +3233,15 @@ function syncAddress() {
 
 function navigateAddress(value, template) {
   const raw = String(value ?? '').trim();
-  const url = looksLikeAddress(raw) || /^(?:https?:|about:)/i.test(raw)
+  if (isHistoryUrl(raw)) {
+    openHistoryPage();
+    return;
+  }
+  if (/^chrome:\/\//i.test(raw)) {
+    setShellStatus('此浏览器不支持 chrome:// 内部页面', 'error');
+    return;
+  }
+  const url = looksLikeAddress(raw) || /^(?:https?|about:|file:|data:|blob:|chrome-extension:|view-source:)/i.test(raw)
     ? normalizedUrl(raw)
     : searchUrlFor(raw, template);
   const item = activeTab();
@@ -2656,12 +3251,12 @@ function navigateAddress(value, template) {
     activateTab(item.id, false);
     return;
   }
-  const hadView = Boolean(item.view && !item.isNewTab);
+  const hadView = Boolean(item.view && !isShellPage(item));
   item.url = url;
   item.title = tabFallbackTitle(url);
   clearTabFavicon(item);
+  resetPageDominantColor(item);
   item.accentSource = '';
-  item.accent = fallbackTabAccent(item.url || item.id);
   const targetView = ensureWebviewForTab(item);
   renderTabs();
   recordNavigation(url, tabFallbackTitle(url));
@@ -2683,6 +3278,10 @@ function reloadActivePage() {
   if (activeTabIsNewTab()) {
     const item = activeTab();
     void refreshNewTabPage(item);
+    return;
+  }
+  if (activeTab()?.isHistory) {
+    renderHistoryPage(activeTab());
     return;
   }
   if (webview && typeof webview.reload === 'function') webview.reload();
@@ -2721,6 +3320,7 @@ function browserShortcutMatches(event, shortcut) {
 function currentWebviewUrl() {
   try {
     const item = activeTab();
+    if (item?.isHistory) return 'about:history';
     if (item?.isNewTab) return 'about:newtab';
     return item?.domReady && webview && typeof webview.getURL === 'function'
       ? webview.getURL()
@@ -3088,21 +3688,17 @@ async function runBookmarkMenuAction(action) {
     case 'new-bookmark': await addCurrentBookmark(context.id); break;
     case 'new-folder': await addBookmarkFolder(context.type === 'folder' ? context.id : (context.parentId || '')); break;
     case 'open-current':
-      if (item?.type === 'bookmark') navigateAddress(item.url);
-      closeBookmarkMenu();
+      openBookmarkEntry(item);
       break;
     case 'open-new-tab':
-      if (item?.type === 'bookmark') createTab(item.url);
-      closeBookmarkMenu();
+      openBookmarkEntry(item, { newTab: true });
       break;
     case 'open-folder':
       if (item?.type === 'folder') openBookmarkFolder(item.id);
       break;
-    case 'open-folder-parent': {
-      const parent = item?.type === 'folder' ? bookmarkById(item.parentId) : null;
-      if (parent?.type === 'folder') openBookmarkFolder(parent.id);
+    case 'open-all':
+      if (item?.type === 'folder') openAllBookmarksInFolder(item.id);
       break;
-    }
     case 'edit-bookmark':
       if (item?.type === 'bookmark') await editBookmark(item);
       break;
@@ -3138,6 +3734,10 @@ function setBrowserSettingsStatus(message, isError = false) {
 function applySharedTheme(theme = {}) {
   const root = document.documentElement;
   const value = (key, fallback) => typeof theme[key] === 'string' && theme[key] ? theme[key] : fallback;
+  const numberValue = (key, fallback, min, max) => {
+    const number = Number(theme[key]);
+    return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
+  };
   root.style.setProperty('--shell-bg', value('background', '#0f1423'));
   root.style.setProperty('--shell-surface', value('surface', '#101f30'));
   root.style.setProperty('--shell-surface-soft', value('surfaceSoft', '#144a74'));
@@ -3147,8 +3747,11 @@ function applySharedTheme(theme = {}) {
   root.style.setProperty('--shell-text', value('text', '#f1f0ed'));
   root.style.setProperty('--shell-muted', value('textMuted', '#9fa39a'));
   root.style.setProperty('--shell-image', theme.backgroundImage ? `url(${theme.backgroundImage})` : 'none');
-  root.style.setProperty('--shell-image-opacity', String(Number.isFinite(Number(theme.backgroundOpacity)) ? theme.backgroundOpacity : .72));
-  root.style.setProperty('--shell-blur', `${Number.isFinite(Number(theme.blur)) ? theme.blur : 18}px`);
+  const imageOpacity = numberValue('backgroundOpacity', .72, 0, 1);
+  const blur = numberValue('blur', 18, 0, 40);
+  root.style.setProperty('--shell-image-opacity', String(imageOpacity));
+  root.style.setProperty('--shell-blur', `${blur}px`);
+  applyNewTabAppearance();
 }
 
 function renderSearchEnginePresets() {
@@ -3219,6 +3822,7 @@ function renderBrowserSettings(nextSettings) {
     ...(nextSettings && typeof nextSettings === 'object' ? nextSettings : {}),
   };
   browserSettings.newTabDisplayMode = normalizeNewTabDisplayMode(browserSettings.newTabDisplayMode);
+  browserSettings.jevAutoJudgeEnabled = browserSettings.jevAutoJudgeEnabled !== false;
   applySharedTheme(browserSettings.theme);
   searchEngineUrl = String(browserSettings.searchEngineUrl || DEFAULT_SEARCH_ENGINE_URL);
   searchEngines = Array.isArray(browserSettings.searchEngines) && browserSettings.searchEngines.length
@@ -3401,6 +4005,7 @@ function renderAgentSettings(nextSettings = browserSettings) {
   if (agentBaseUrlInput && document.activeElement !== agentBaseUrlInput) agentBaseUrlInput.value = String(settings.agentBaseUrl || settings.agentApiUrl || '');
   if (agentModelInput && document.activeElement !== agentModelInput) agentModelInput.value = String(settings.agentModel || settings.agentApi || '');
   if (agentTokenInput && document.activeElement !== agentTokenInput) agentTokenInput.value = '';
+  if (agentJevEnabledInput && document.activeElement !== agentJevEnabledInput) agentJevEnabledInput.checked = settings.jevAutoJudgeEnabled !== false;
   if (agentContextInput && document.activeElement !== agentContextInput) agentContextInput.value = String(settings.agentContextBudgetTokens ?? 200000);
   if (agentOutputInput && document.activeElement !== agentOutputInput) agentOutputInput.value = String(settings.agentMaxOutputTokens ?? 8192);
   if (agentReasoningInput && document.activeElement !== agentReasoningInput) agentReasoningInput.value = String(settings.agentReasoningEffort ?? 'medium');
@@ -3411,13 +4016,18 @@ function renderAgentSettings(nextSettings = browserSettings) {
   if (agentTokenClear) agentTokenClear.hidden = !tokenSet;
   if (agentModelSummary) {
     const model = String(settings.agentModel || settings.agentApi || '').trim();
-    agentModelSummary.textContent = settings.agentEnabled === false ? '当前环境未启用' : model || '未配置模型';
+    const reasoning = agentReasoningLabel(settings, settings.agentReasoningEffort);
+    agentModelSummary.textContent = settings.agentEnabled === false
+      ? '当前环境未启用'
+      : model
+        ? `${model} · ${reasoning}`
+        : '未配置模型';
     agentModelSummary.title = settings.agentEnabled === false
       ? '请在 Agent 页面激活当前环境'
       : !browserSettingsLoaded
         ? '正在读取当前环境配置'
         : model
-          ? `当前模型：${model} · 思考等级：${agentReasoningLabel(settings, settings.agentReasoningEffort)}，点击切换`
+          ? `模型ID：${model} · 思考等级：${reasoning}，点击切换`
           : '点击拉取模型列表';
     agentModelSummary.disabled = !browserSettingsLoaded || settings.agentEnabled === false;
   }
@@ -3489,6 +4099,7 @@ function renderAgentReasoningOptions(settings = browserSettings) {
 
 async function fetchAgentModels() {
   if (!window.shellApi?.fetchAgentModels) return;
+  if (agentModelRequestId) return;
   const requestId = ++agentModelFetchSequence;
   const payload = {
     protocol: agentProtocolInput?.value || browserSettings.agentProtocol,
@@ -3504,10 +4115,15 @@ async function fetchAgentModels() {
   if (token) payload.token = token;
   setAgentModelPickerStatus('正在拉取模型列表…');
   setAgentSettingModelStatus('正在拉取模型列表…');
-  if (agentModelRefresh) agentModelRefresh.disabled = true;
-  if (agentSettingModelRefresh) agentSettingModelRefresh.disabled = true;
+  for (const button of [agentModelRefresh, agentSettingModelRefresh]) {
+    button?.classList.add('is-loading');
+    button?.setAttribute('title', '取消模型列表请求');
+    button?.setAttribute('aria-label', '取消模型列表请求');
+  }
   try {
-    const result = await window.shellApi.fetchAgentModels(payload);
+    const result = await window.shellApi.fetchAgentModels(payload, (id) => {
+      if (requestId === agentModelFetchSequence) agentModelRequestId = id;
+    });
     if (requestId !== agentModelFetchSequence) return;
     if (!result || result.ok === false) throw new Error(result?.error || '模型列表获取失败');
     const models = Array.isArray(result.models) ? result.models : [];
@@ -3518,13 +4134,39 @@ async function fetchAgentModels() {
   } catch (error) {
     if (requestId !== agentModelFetchSequence) return;
     renderAgentModelOptions([], browserSettings.agentModel || agentModelInput?.value);
-    const message = `获取失败：${error.message || '未知错误'}`;
-    setAgentModelPickerStatus(message, true);
-    setAgentSettingModelStatus(message, true);
+    if (error.message === '请求已取消') {
+      setAgentModelPickerStatus('模型列表请求已取消');
+      setAgentSettingModelStatus('模型列表请求已取消');
+    } else {
+      const message = `获取失败：${error.message || '未知错误'}`;
+      setAgentModelPickerStatus(message, true);
+      setAgentSettingModelStatus(message, true);
+    }
   } finally {
-    if (requestId === agentModelFetchSequence && agentModelRefresh) agentModelRefresh.disabled = false;
-    if (requestId === agentModelFetchSequence && agentSettingModelRefresh) agentSettingModelRefresh.disabled = false;
+    if (requestId === agentModelFetchSequence) {
+      agentModelRequestId = '';
+      for (const button of [agentModelRefresh, agentSettingModelRefresh]) {
+        button?.classList.remove('is-loading');
+        button?.setAttribute('title', '刷新模型列表');
+        button?.setAttribute('aria-label', '刷新模型列表');
+      }
+    }
   }
+}
+
+function cancelAgentModelFetch() {
+  if (!agentModelRequestId) return false;
+  window.shellApi?.cancelAgentRequest?.(agentModelRequestId);
+  agentModelRequestId = '';
+  agentModelFetchSequence += 1;
+  setAgentModelPickerStatus('模型列表请求已取消');
+  setAgentSettingModelStatus('模型列表请求已取消');
+  for (const button of [agentModelRefresh, agentSettingModelRefresh]) {
+    button?.classList.remove('is-loading');
+    button?.setAttribute('title', '刷新模型列表');
+    button?.setAttribute('aria-label', '刷新模型列表');
+  }
+  return true;
 }
 
 async function selectAgentModel(model) {
@@ -3589,6 +4231,7 @@ async function saveAgentSettings(event) {
     agentReasoningEffort: agentReasoningInput?.value || 'medium',
     agentTemperature: agentTemperatureInput?.value === '' ? null : agentTemperatureInput?.value,
     agentMaxSteps: agentStepsInput?.value || '0',
+    jevAutoJudgeEnabled: agentJevEnabledInput?.checked === true,
   };
   const token = agentTokenInput?.value.trim() || '';
   if (token || clearAgentTokenRequested) {
@@ -3906,6 +4549,64 @@ function hideHumanVerification() {
   }
 }
 
+function formatAgentTaskDuration(durationMs) {
+  const seconds = Math.floor(Math.max(0, Number(durationMs) || 0) / 1000);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  const padded = (value) => String(value).padStart(2, '0');
+  return hours > 0 ? `${hours}:${padded(minutes)}:${padded(remainder)}` : `${padded(minutes)}:${padded(remainder)}`;
+}
+
+function renderAgentTaskTimer() {
+  if (!agentTaskTimer || !agentTaskStartedAt) return;
+  const elapsed = agentTaskTimerActive
+    ? Math.max(0, Date.now() - agentTaskStartedAt)
+    : agentTaskElapsedMs;
+  if (agentTaskTimerActive) agentTaskElapsedMs = elapsed;
+  const duration = formatAgentTaskDuration(elapsed);
+  const label = `用时 ${duration}`;
+  agentTaskTimer.textContent = label;
+  agentTaskTimer.hidden = false;
+  agentTaskTimer.classList.toggle('is-active', agentTaskTimerActive);
+  agentTaskTimer.title = agentTaskTimerActive ? `本次任务已处理 ${duration}` : `本次任务用时 ${duration}`;
+  agentTaskTimer.setAttribute('aria-label', `任务处理${agentTaskTimerActive ? '中，已用时' : '用时'} ${duration}`);
+}
+
+function startAgentTaskTimer() {
+  if (agentTaskTimerHandle) window.clearInterval(agentTaskTimerHandle);
+  agentTaskStartedAt = Date.now();
+  agentTaskElapsedMs = 0;
+  agentTaskTimerActive = true;
+  renderAgentTaskTimer();
+  agentTaskTimerHandle = window.setInterval(renderAgentTaskTimer, 1000);
+}
+
+function stopAgentTaskTimer() {
+  if (!agentTaskStartedAt) return;
+  agentTaskElapsedMs = Math.max(0, Date.now() - agentTaskStartedAt);
+  agentTaskTimerActive = false;
+  if (agentTaskTimerHandle) window.clearInterval(agentTaskTimerHandle);
+  agentTaskTimerHandle = null;
+  renderAgentTaskTimer();
+  agentTaskStartedAt = 0;
+}
+
+function clearAgentTaskTimer() {
+  if (agentTaskTimerHandle) window.clearInterval(agentTaskTimerHandle);
+  agentTaskTimerHandle = null;
+  agentTaskStartedAt = 0;
+  agentTaskElapsedMs = 0;
+  agentTaskTimerActive = false;
+  if (agentTaskTimer) {
+    agentTaskTimer.hidden = true;
+    agentTaskTimer.textContent = '';
+    agentTaskTimer.removeAttribute('title');
+    agentTaskTimer.removeAttribute('aria-label');
+    agentTaskTimer.classList.remove('is-active');
+  }
+}
+
 function waitForHumanVerification(details, target = currentAgentTarget()) {
   if (agentHumanVerificationWait) {
     showHumanVerification(details);
@@ -3959,8 +4660,6 @@ async function resumeHumanVerification({ silent = false } = {}) {
 function setAgentBusy(nextBusy) {
   agentBusy = Boolean(nextBusy);
   if (agentState) agentState.textContent = agentBusy ? '处理中' : '就绪';
-  if (agentQueueSend) agentQueueSend.hidden = !agentBusy;
-  if (agentSendNow) agentSendNow.hidden = !agentBusy;
   if (agentSend) {
     agentSend.disabled = false;
     agentSend.classList.toggle('is-busy', agentBusy);
@@ -3970,7 +4669,7 @@ function setAgentBusy(nextBusy) {
       ? '<span class="agent-send-progress" aria-hidden="true"><i></i><i></i><i></i></span><span class="agent-stop-glyph" aria-hidden="true"></span>'
       : '<svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-send"></use></svg>';
   }
-  for (const button of agentQuickActions) button.disabled = false;
+  renderAgentContextUsage();
 }
 
 function pageReadScript() {
@@ -4204,9 +4903,45 @@ async function captureAgentObservation(options = {}, target = null) {
   };
 }
 
-async function runNormalizedAgentInput(action, target = null) {
+function assertAgentActionActive(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error('网页动作已取消');
+  error.name = 'AbortError';
+  throw error;
+}
+
+async function waitForAgentAction(ms, signal) {
+  let remaining = ms;
+  while (remaining > 0) {
+    assertAgentActionActive(signal);
+    const delay = Math.min(remaining, 2_147_483_647);
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        if (error) reject(error);
+        else resolve();
+      };
+      const onAbort = () => finish(Object.assign(new Error('网页动作已取消'), { name: 'AbortError' }));
+      const timer = window.setTimeout(() => finish(), delay);
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener('abort', onAbort, { once: true });
+    });
+    remaining -= delay;
+  }
+}
+
+async function runNormalizedAgentInput(action, target = null, signal = null) {
+  assertAgentActionActive(signal);
   assertAgentTarget(target);
-  if (action.type === 'screenshot') return captureAgentObservation(action, target);
+  if (action.type === 'screenshot') {
+    const result = await captureAgentObservation(action, target);
+    assertAgentActionActive(signal);
+    return result;
+  }
   const viewport = agentViewport();
   const inputView = target?.view || webview;
   const pointFor = (value, label) => boundedAgentPoint(value, viewport, label);
@@ -4225,12 +4960,16 @@ async function runNormalizedAgentInput(action, target = null) {
       const target = pointFor(action, '鼠标坐标');
       const previous = usableAgentPointer(viewport) || target;
       await moveAgentPointer(target, previous, inputView);
-      await waitForAgentInput(AGENT_HUMAN_CLICK.settleDelayMs);
+      await waitForAgentAction(AGENT_HUMAN_CLICK.settleDelayMs, signal);
       for (let index = 1; index <= action.clickCount; index += 1) {
+        assertAgentActionActive(signal);
         await sendAgentInputEvent({ type: 'mouseDown', x: target.x, y: target.y, button: action.button, clickCount: index }, inputView);
-        await waitForAgentInput(AGENT_HUMAN_CLICK.pressDelayMs);
-        await sendAgentInputEvent({ type: 'mouseUp', x: target.x, y: target.y, button: action.button, clickCount: index }, inputView);
-        if (index < action.clickCount) await waitForAgentInput(AGENT_HUMAN_CLICK.clickGapDelayMs);
+        try {
+          await waitForAgentAction(AGENT_HUMAN_CLICK.pressDelayMs, signal);
+        } finally {
+          await sendAgentInputEvent({ type: 'mouseUp', x: target.x, y: target.y, button: action.button, clickCount: index }, inputView);
+        }
+        if (index < action.clickCount) await waitForAgentAction(AGENT_HUMAN_CLICK.clickGapDelayMs, signal);
       }
       rememberAgentPointer(target);
       return { ok: true, type: action.type, button: action.button, clickCount: action.clickCount, ...target };
@@ -4264,23 +5003,35 @@ async function runNormalizedAgentInput(action, target = null) {
     }
     case 'drag': {
       focusAgentWebview();
-      const path = action.path.map((item, index) => pointFor(item, `拖拽点 ${index + 1}`));
+      const path = [];
+      for (const [index, item] of action.path.entries()) {
+        assertAgentActionActive(signal);
+        path.push(pointFor(item, `拖拽点 ${index + 1}`));
+      }
       const first = path[0];
       const previous = usableAgentPointer(viewport) || first;
       await moveAgentPointer(first, previous, inputView);
+      assertAgentActionActive(signal);
       await sendAgentInputEvent({ type: 'mouseDown', x: first.x, y: first.y, button: action.button, clickCount: 1 }, inputView);
       let prior = first;
-      for (const target of path.slice(1)) {
-        await sendAgentInputEvent({ type: 'mouseMove', x: target.x, y: target.y, movementX: target.x - prior.x, movementY: target.y - prior.y }, inputView);
-        prior = target;
+      try {
+        for (const target of path.slice(1)) {
+          assertAgentActionActive(signal);
+          await sendAgentInputEvent({ type: 'mouseMove', x: target.x, y: target.y, movementX: target.x - prior.x, movementY: target.y - prior.y }, inputView);
+          prior = target;
+        }
+      } finally {
+        await sendAgentInputEvent({ type: 'mouseUp', x: prior.x, y: prior.y, button: action.button, clickCount: 1 }, inputView);
       }
-      await sendAgentInputEvent({ type: 'mouseUp', x: prior.x, y: prior.y, button: action.button, clickCount: 1 }, inputView);
       rememberAgentPointer(prior);
       return { ok: true, type: action.type, from: first, to: prior, points: path.length };
     }
     case 'keypress': {
       focusAgentWebview();
-      for (const event of agentActions.keyPressEvents(action.keys)) await sendAgentInputEvent(event, inputView);
+      for (const event of agentActions.keyPressEvents(action.keys)) {
+        assertAgentActionActive(signal);
+        await sendAgentInputEvent(event, inputView);
+      }
       return { ok: true, type: action.type, keys: action.keys };
     }
     case 'key_down':
@@ -4290,12 +5041,14 @@ async function runNormalizedAgentInput(action, target = null) {
       return { ok: true, type: action.type, key: action.key };
     }
     case 'type':
+      assertAgentActionActive(signal);
       focusAgentWebview();
       if (!webview || typeof webview.insertText !== 'function') throw new Error('当前 Electron 不支持文本输入');
       await webview.insertText(action.text);
+      assertAgentActionActive(signal);
       return { ok: true, type: action.type, textLength: action.text.length };
     case 'wait':
-      await new Promise((resolve) => window.setTimeout(resolve, action.ms));
+      await waitForAgentAction(action.ms, signal);
       return { ok: true, type: action.type, ms: action.ms };
     default:
       throw new Error(`不支持的虚拟输入动作：${action.type}`);
@@ -4312,25 +5065,33 @@ function executeAgentTabOperation(operation) {
   return queueAgentExecution(async () => operation());
 }
 
-async function executeAgentProtocolAction(input) {
+async function executeAgentProtocolAction(input, signal = null) {
   const target = currentAgentTarget();
   return queueAgentExecution(async () => {
+    assertAgentActionActive(signal);
     assertAgentTarget(target);
     const action = agentActions.normalizeAgentAction(input);
-    return runNormalizedAgentInput(action, target);
+    return runNormalizedAgentInput(action, target, signal);
   });
 }
 
-async function executeAgentProtocolBatch(inputs) {
+async function executeAgentProtocolBatch(inputs, signal = null) {
   if (!Array.isArray(inputs) || !inputs.length) throw new Error('动作批次不能为空');
-  const maxActions = agentActions.limits?.maxActionsPerBatch || 24;
-  if (inputs.length > maxActions) throw new Error(`单批最多执行 ${maxActions} 个动作`);
-  const normalized = inputs.map((input) => agentActions.normalizeAgentAction(input));
+  const normalized = [];
+  for (const input of inputs) {
+    assertAgentActionActive(signal);
+    normalized.push(agentActions.normalizeAgentAction(input));
+    if (normalized.length % 32 === 0) await new Promise((resolve) => window.setTimeout(resolve, 0));
+  }
   const target = currentAgentTarget();
   return queueAgentExecution(async () => {
+    assertAgentActionActive(signal);
     assertAgentTarget(target);
     const results = [];
-    for (const action of normalized) results.push(await runNormalizedAgentInput(action, target));
+    for (const action of normalized) {
+      assertAgentActionActive(signal);
+      results.push(await runNormalizedAgentInput(action, target, signal));
+    }
     return { ok: true, count: results.length, results };
   });
 }
@@ -4380,6 +5141,108 @@ function modelObservationMessage(observation, prefix = '当前活动标签观察
     content: `${prefix}：\n${formatAgentValue(summary)}`,
     images,
   };
+}
+
+function estimateAgentContextTokens(messages) {
+  try {
+    return (Array.isArray(messages) ? messages : []).reduce((total, message) => (
+      total + Math.max(1, Math.ceil(JSON.stringify(message || {}).length / 4))
+    ), 0);
+  } catch {
+    return 0;
+  }
+}
+
+function agentContextUsagePercent() {
+  const budget = Number(browserSettings.agentContextBudgetTokens);
+  if (!Number.isFinite(budget) || budget <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((estimateAgentContextTokens(agentConversation) / budget) * 100)));
+}
+
+function showAgentContextNotice(message) {
+  if (!agentContextUsage) return;
+  agentContextUsage.title = message;
+  agentContextUsage.classList.remove('is-notice');
+  void agentContextUsage.offsetWidth;
+  agentContextUsage.classList.add('is-notice');
+  if (agentContextNoticeTimer) window.clearTimeout(agentContextNoticeTimer);
+  agentContextNoticeTimer = window.setTimeout(() => {
+    agentContextUsage.classList.remove('is-notice');
+    agentContextNoticeTimer = null;
+  }, 2400);
+}
+
+function renderAgentContextUsage() {
+  if (!agentContextUsage) return;
+  const percent = agentContextUsagePercent();
+  agentContextUsage.textContent = `${percent}%`;
+  agentContextUsage.dataset.percent = `${percent}%`;
+  const angle = Math.round(percent * 3.6);
+  const color = percent >= 90 ? '#f08080' : percent >= 75 ? '#f1c75b' : 'var(--agent-accent)';
+  agentContextUsage.style.setProperty('--agent-context-color', color);
+  agentContextUsage.style.setProperty('--agent-context-angle', `${angle}deg`);
+  agentContextUsage.dataset.level = percent >= 90 ? 'critical' : percent >= 75 ? 'warning' : 'normal';
+  agentContextUsage.setAttribute('aria-label', `上下文使用量 ${percent}%`);
+  agentContextUsage.title = `上下文使用量 ${percent}%，点击压缩`;
+}
+
+function compressAgentConversationIfNeeded(force = false) {
+  const budget = Number(browserSettings.agentContextBudgetTokens);
+  if (!Number.isFinite(budget) || budget <= 0) return false;
+  const currentTokens = estimateAgentContextTokens(agentConversation);
+  if (!force && currentTokens < budget * AGENT_CONTEXT_COMPRESSION_RATIO) return false;
+  if (agentContextLastCompressionTokens > 0 && currentTokens <= agentContextLastCompressionTokens) return false;
+  const system = agentConversation.find((message) => message?.role === 'system');
+  const currentTask = [...agentConversation].reverse().find((message) => message?.role === 'user');
+  const preserved = new Set([system, currentTask]);
+  const history = agentConversation.filter((message) => message && !preserved.has(message));
+  if (!history.length) return false;
+  const latestToolPair = (() => {
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const assistant = history[index];
+      if (assistant?.role !== 'assistant' || !Array.isArray(assistant.toolCalls) || !assistant.toolCalls.length) continue;
+      const pair = [assistant];
+      for (let next = index + 1; next < history.length && history[next]?.role === 'tool'; next += 1) pair.push(history[next]);
+      return pair;
+    }
+    return [];
+  })();
+  const pairSet = new Set(latestToolPair);
+  const summary = history
+    .filter((message) => !pairSet.has(message))
+    .map((message) => `${message.role}: ${formatAgentValue(message.content).slice(0, 1200)}`)
+    .join('\n');
+  const compacted = [
+    system,
+    {
+      role: 'user',
+      content: `以下是本任务较早的对话摘要，保留用于继续执行。\n${summary.slice(-12000)}`,
+    },
+    ...latestToolPair,
+    currentTask,
+  ].filter(Boolean);
+  agentConversation = compacted;
+  agentContextLastCompressionTokens = estimateAgentContextTokens(agentConversation);
+  renderAgentContextUsage();
+  appendAgentMessage('上下文已接近预算，已自动压缩早期对话并继续当前任务。', 'assistant');
+  return true;
+}
+
+function requestAgentContextCompression() {
+  const percent = agentContextUsagePercent();
+  if (percent < 50) {
+    showAgentContextNotice('上下文使用量低于 50%，暂不能压缩');
+    return false;
+  }
+  if (agentContextLastCompressionTokens > 0
+    && estimateAgentContextTokens(agentConversation) <= agentContextLastCompressionTokens) {
+    showAgentContextNotice('请继续当前任务后再进行下一次压缩');
+    return false;
+  }
+  const compressed = compressAgentConversationIfNeeded(true);
+  renderAgentContextUsage();
+  showAgentContextNotice(compressed ? '已压缩早期对话，继续当前任务' : '当前没有可压缩的早期对话');
+  return compressed;
 }
 
 function parseModelToolArguments(value) {
@@ -4460,7 +5323,7 @@ function retryAgentPageAction(operation, signal, runId, label, retryMissing = fa
 
 function retryModelTool(call, actionView, runId, signal) {
   return agentRetry.retryOperation(async () => {
-    const result = await executeModelTool(call.name, call.arguments);
+    const result = await executeModelTool(call.name, call.arguments, signal);
     if (result?.ok === false) throw toolResultFailure(result);
     return result;
   }, {
@@ -4491,7 +5354,7 @@ async function judgeAgentCompletion({ goal, actions, earlierActionCount, respons
   const actionView = appendAgentAction('agent_jev_completion', '判断中');
   try {
     const observation = await retryAgentRequest(
-      () => executeAgentProtocolAction({ type: 'screenshot', includeText: true, includeScreenshot: false }),
+      () => executeAgentProtocolAction({ type: 'screenshot', includeText: true, includeScreenshot: false }, signal),
       signal,
       runId,
       '页面观察',
@@ -4511,7 +5374,7 @@ async function judgeAgentCompletion({ goal, actions, earlierActionCount, respons
           confidence: '你对 completed 判断的置信度是多少？请给出 0 到 1 之间的数字。',
           reason: '用一句简短的话说明判断依据。',
         },
-      }),
+      }, signal),
       signal,
       runId,
       'JEV 判断',
@@ -4582,16 +5445,29 @@ async function ensureModelActionAllowed() {
   if (after?.required) throw new Error('仍检测到人机验证，请完成后点击继续');
 }
 
-async function executeModelTool(name, rawArguments) {
+async function executeModelTool(name, rawArguments, signal = null) {
+  assertAgentActionActive(signal);
   const args = parseModelToolArguments(rawArguments);
   switch (String(name || '').trim()) {
     case 'browser_observe':
-      return executeAgentProtocolAction({ type: 'screenshot', includeText: true, includeScreenshot: true });
+      return executeAgentProtocolAction({ type: 'screenshot', includeText: true, includeScreenshot: true }, signal);
     case 'jev_decide': {
+      if (browserSettings.jevAutoJudgeEnabled === false) throw new Error('JEV 模型未启用');
       if (!window.shellApi?.jevDecision) throw new Error('JEV 判断接口暂不可用');
-      const result = await window.shellApi.jevDecision({ state: args.state, questions: args.questions });
-      if (result?.ok === false) throw new Error(result.error || 'JEV 判断失败');
-      return result;
+      let requestId = '';
+      const cancelRequest = () => window.shellApi.cancelAgentRequest?.(requestId);
+      agentRequestCancel = cancelRequest;
+      try {
+        const result = await window.shellApi.jevDecision(
+          { state: args.state, questions: args.questions },
+          (id) => { requestId = String(id || ''); },
+        );
+        assertAgentActionActive(signal);
+        if (result?.ok === false) throw new Error(result.error || 'JEV 判断失败');
+        return result;
+      } finally {
+        if (agentRequestCancel === cancelRequest) agentRequestCancel = null;
+      }
     }
     case 'browser_read_page':
       return executePageScript(pageReadScript(), { type: 'read' });
@@ -4639,17 +5515,17 @@ async function executeModelTool(name, rawArguments) {
     case 'browser_upload_files':
       return uploadAgentFiles(args);
     case 'browser_click':
-      return executeAgentProtocolAction({ type: 'click', ...args });
+      return executeAgentProtocolAction({ type: 'click', ...args }, signal);
     case 'browser_type':
-      return executeAgentProtocolAction({ type: 'type', text: args.text });
+      return executeAgentProtocolAction({ type: 'type', text: args.text }, signal);
     case 'browser_keypress':
-      return executeAgentProtocolAction({ type: 'keypress', keys: args.keys });
+      return executeAgentProtocolAction({ type: 'keypress', keys: args.keys }, signal);
     case 'browser_scroll':
-      return executeAgentProtocolAction({ type: 'scroll', ...args });
+      return executeAgentProtocolAction({ type: 'scroll', ...args }, signal);
     case 'browser_drag':
-      return executeAgentProtocolAction({ type: 'drag', ...args });
+      return executeAgentProtocolAction({ type: 'drag', ...args }, signal);
     case 'browser_wait':
-      return executeAgentProtocolAction({ type: 'wait', ms: args.ms });
+      return executeAgentProtocolAction({ type: 'wait', ms: args.ms }, signal);
     case 'browser_configure_shortcuts':
       return configureBrowserControls(args);
     default:
@@ -4680,9 +5556,28 @@ function ensureAgentSystemMessage() {
   });
 }
 
+function syncAgentJevInstructions() {
+  const systemMessage = agentConversation.find((message) => message.role === 'system');
+  if (!systemMessage) return;
+  const enabledInstruction = '网页任务每批动作后都会由 JEV 判断是否完成；未完成时继续操作，完成时停止网页动作并用清楚的中文总结结果。';
+  const disabledInstruction = '网页任务完成后，根据操作结果向用户清楚总结，不要声称未经验证的结果已确认。';
+  const toolInstruction = '需要结构化判断时可以使用 jev_decide；它只返回判断结果，不执行浏览器动作。';
+  if (browserSettings.jevAutoJudgeEnabled === false) {
+    systemMessage.content = systemMessage.content
+      .replace(enabledInstruction, disabledInstruction)
+      .replace(toolInstruction, '');
+    return;
+  }
+  systemMessage.content = systemMessage.content.replace(disabledInstruction, enabledInstruction);
+  if (!systemMessage.content.includes(toolInstruction)) {
+    systemMessage.content = systemMessage.content.replace('不要索取或输出 Token、Cookie、密码等敏感信息。', `${toolInstruction}不要索取或输出 Token、Cookie、密码等敏感信息。`);
+  }
+}
+
 async function runModelAgent(userText, { showUser = true } = {}) {
   const hint = agentModelSetupHint();
   if (showUser) appendAgentMessage(userText, 'user');
+  renderAgentContextUsage();
   if (hint) {
     appendAgentMessage(hint, 'assistant', { error: true });
     return;
@@ -4690,10 +5585,13 @@ async function runModelAgent(userText, { showUser = true } = {}) {
 
   const runId = ++agentRunSequence;
   agentStopRequested = false;
+  agentContextLastCompressionTokens = 0;
   const retryController = new AbortController();
   agentRetryController = retryController;
   setAgentBusy(true);
+  startAgentTaskTimer();
   ensureAgentSystemMessage();
+  syncAgentJevInstructions();
   let activeStreamMessage = null;
   let lastDecision = null;
   try {
@@ -4701,7 +5599,7 @@ async function runModelAgent(userText, { showUser = true } = {}) {
     // model. The user can stop the run when a site needs manual attention.
     showAgentThinking('正在查看当前页面');
     const observation = await retryAgentRequest(
-      () => executeAgentProtocolAction({ type: 'screenshot', includeText: true, includeScreenshot: true }),
+      () => executeAgentProtocolAction({ type: 'screenshot', includeText: true, includeScreenshot: true }, retryController.signal),
       retryController.signal,
       runId,
       '页面观察',
@@ -4714,6 +5612,7 @@ async function runModelAgent(userText, { showUser = true } = {}) {
         ? [{ dataUrl: observation.screenshot }]
         : [],
     });
+    renderAgentContextUsage();
 
     let steps = 0;
     const maxSteps = Number(browserSettings.agentMaxSteps) || 0;
@@ -4721,6 +5620,7 @@ async function runModelAgent(userText, { showUser = true } = {}) {
     let finalizing = false;
     let taskActionHistory = { actions: [], omittedCount: 0 };
     while (runId === agentRunSequence && !agentStopRequested) {
+      compressAgentConversationIfNeeded();
       showAgentThinking('正在思考');
       let streamedMessage = null;
       let streamedText = '';
@@ -4741,11 +5641,32 @@ async function runModelAgent(userText, { showUser = true } = {}) {
           streamedMessage.setText('');
           streamedMessage.row.classList.add('agent-message-streaming');
         }
-        const response = typeof window.shellApi?.chatAgentStream === 'function'
-          ? await window.shellApi.chatAgentStream({ messages: agentConversation, finalize: finalizing }, onDelta)
-          : await window.shellApi.chatAgent({ messages: agentConversation, finalize: finalizing });
-        if (!response || response.ok === false) throw new Error(response?.error || 'Agent 模型请求失败');
-        return response;
+        let streamRequestId = '';
+        let cancelStream = null;
+        try {
+          if (typeof window.shellApi?.chatAgentStream === 'function') {
+            cancelStream = () => window.shellApi.cancelAgentRequest?.(streamRequestId);
+            agentRequestCancel = cancelStream;
+            const response = await window.shellApi.chatAgentStream(
+              { messages: agentConversation, finalize: finalizing },
+              onDelta,
+              (requestId) => { streamRequestId = String(requestId || ''); },
+            );
+            if (!response || response.ok === false) throw new Error(response?.error || 'Agent 模型请求失败');
+            return response;
+          }
+          let requestId = '';
+          cancelStream = () => window.shellApi.cancelAgentRequest?.(requestId);
+          agentRequestCancel = cancelStream;
+          const response = await window.shellApi.chatAgent(
+            { messages: agentConversation, finalize: finalizing },
+            (id) => { requestId = String(id || ''); },
+          );
+          if (!response || response.ok === false) throw new Error(response?.error || 'Agent 模型请求失败');
+          return response;
+        } finally {
+          if (agentRequestCancel === cancelStream) agentRequestCancel = null;
+        }
       };
       const result = await retryAgentRequest(requestModel, retryController.signal, runId, '模型请求');
       hideAgentThinking();
@@ -4765,6 +5686,8 @@ async function runModelAgent(userText, { showUser = true } = {}) {
           ? { responseItems: result.responseItems }
           : {}),
       });
+      renderAgentContextUsage();
+      compressAgentConversationIfNeeded();
       if (text && !streamedMessage && (!pageTaskTouched || toolCalls.length || finalizing)) appendAgentMessage(text, 'assistant');
       if (streamedMessage) {
         if (streamedText !== text) streamedMessage.setText(text || streamedText);
@@ -4781,6 +5704,11 @@ async function runModelAgent(userText, { showUser = true } = {}) {
         }
         if (!pageTaskTouched) {
           if (!text) appendAgentMessage('模型没有返回可执行动作或文字结果。', 'assistant', { error: true });
+          break;
+        }
+        if (browserSettings.jevAutoJudgeEnabled === false) {
+          if (text) appendAgentMessage(text, 'assistant');
+          else appendAgentMessage('网页操作已结束，当前未启用 JEV 完成判断。', 'assistant');
           break;
         }
 
@@ -4851,7 +5779,7 @@ async function runModelAgent(userText, { showUser = true } = {}) {
         completedActions.map(summarizeAgentAction),
       );
 
-      if (ranPageTool && !agentStopRequested) {
+      if (ranPageTool && !agentStopRequested && browserSettings.jevAutoJudgeEnabled !== false) {
         try {
           lastDecision = await judgeAgentCompletion({
             goal: userText,
@@ -4895,6 +5823,7 @@ async function runModelAgent(userText, { showUser = true } = {}) {
     if (runId === agentRunSequence) {
       if (agentRetryController === retryController) agentRetryController = null;
       agentStopRequested = false;
+      stopAgentTaskTimer();
       setAgentBusy(false);
       if (agentTaskQueue.length && !tornDown) setAgentBusy(true);
       syncAgentContext();
@@ -4906,6 +5835,8 @@ async function runModelAgent(userText, { showUser = true } = {}) {
 function stopModelAgent() {
   if (!agentBusy && !agentHumanVerificationWait) return;
   agentStopRequested = true;
+  agentRequestCancel?.();
+  agentRequestCancel = null;
   agentRetryController?.abort();
   cancelHumanVerificationWait();
   if (agentState) agentState.textContent = '正在停止';
@@ -4937,7 +5868,6 @@ function exposeBrowserAgent() {
         grants: 'session-scoped',
         limits: 'none',
       },
-      limits: { ...(agentActions.limits || {}) },
       coordinateSpace: 'active-page-css-px',
       scrollPositiveY: 'down',
     }),
@@ -4964,6 +5894,7 @@ async function performAgentAction(action, userText = '', { showUser = true } = {
   }
 
   setAgentBusy(true);
+  startAgentTaskTimer();
   agentStopRequested = false;
   const runId = agentRunSequence;
   const retryController = new AbortController();
@@ -4995,14 +5926,14 @@ async function performAgentAction(action, userText = '', { showUser = true } = {
         break;
       case 'screenshot':
         pendingActionView = appendAgentAction('browser_observe', '执行中');
-        result = await retryAgentPageAction(() => executeAgentProtocolAction({ type: 'screenshot' }), retryController.signal, runId, '观察页面');
+        result = await retryAgentPageAction(() => executeAgentProtocolAction({ type: 'screenshot' }, retryController.signal), retryController.signal, runId, '观察页面');
         pendingActionView?.setState('已完成', { result: summarizeAgentObservation(result), resultLabel: '页面观察' });
         break;
       case 'input':
         pendingActionView = appendAgentAction(action.label || agentActions.actionLabel?.(action.inputAction) || '网页操作', '执行中');
         result = ['screenshot', 'mouse_move', 'wait'].includes(action.inputAction?.type)
-          ? await retryAgentPageAction(() => executeAgentProtocolAction(action.inputAction), retryController.signal, runId, action.label || '执行动作')
-          : await executeAgentProtocolAction(action.inputAction);
+          ? await retryAgentPageAction(() => executeAgentProtocolAction(action.inputAction, retryController.signal), retryController.signal, runId, action.label || '执行动作')
+          : await executeAgentProtocolAction(action.inputAction, retryController.signal);
         pendingActionView?.setState(result?.ok === false ? '失败' : '已完成', {
           error: result?.ok === false,
           result: result?.type === 'observation' ? summarizeAgentObservation(result) : result,
@@ -5045,6 +5976,7 @@ async function performAgentAction(action, userText = '', { showUser = true } = {
     if (agentRetryController === retryController) agentRetryController = null;
     agentStopRequested = false;
     hideAgentThinking();
+    stopAgentTaskTimer();
     setAgentBusy(false);
     if (agentTaskQueue.length && !tornDown) setAgentBusy(true);
     syncAgentContext();
@@ -5126,6 +6058,7 @@ function teardown() {
   tornDown = true;
   agentTaskQueue = [];
   stopModelAgent();
+  clearAgentTaskTimer();
   setAgentBusy(false);
   setAgentOpen(false);
   for (const item of tabItems) {
@@ -5405,6 +6338,11 @@ window.shellApi?.onConfirmationRequest?.((request) => {
     .catch(() => window.shellApi?.respondToConfirmation?.(request.requestId, false));
 });
 window.shellApi?.onSettingsUpdated?.((settings) => renderBrowserSettings(settings));
+window.shellApi?.onBookmarksUpdated?.((details) => {
+  if (!details || typeof details !== 'object') return;
+  if (details.profileId && details.profileId !== profileId) return;
+  if (Array.isArray(details.bookmarks)) applyBookmarkState(details.bookmarks);
+});
 window.shellApi?.onProfileUpdated?.((details) => {
   if (!details || typeof details !== 'object') return;
   if (details.profileId && details.profileId !== profileId) return;
@@ -5481,7 +6419,9 @@ agentThemeToggle?.addEventListener('click', (event) => {
 });
 agentSettingsCancel?.addEventListener('click', () => setAgentSettingsOpen(false));
 agentSettingsForm?.addEventListener('submit', (event) => void saveAgentSettings(event));
-agentSettingModelRefresh?.addEventListener('click', () => void fetchAgentModels());
+agentSettingModelRefresh?.addEventListener('click', () => {
+  if (!cancelAgentModelFetch()) void fetchAgentModels();
+});
 agentModelInput?.addEventListener('focus', () => {
   if (agentSettingModelOptions && !agentSettingModelOptions.options.length) void fetchAgentModels();
 });
@@ -5510,13 +6450,6 @@ agentToggle?.addEventListener('click', (event) => {
   }
 });
 agentClose?.addEventListener('click', () => setAgentOpen(false));
-for (const button of agentQuickActions) {
-  button.addEventListener('click', () => {
-    const kind = button.dataset.agentAction;
-    if (!kind) return;
-    void runAgentAction({ kind, label: button.textContent.trim() });
-  });
-}
 agentModelSummary?.addEventListener('click', (event) => {
   event.stopPropagation();
   const open = agentModelPicker?.hidden === false;
@@ -5524,10 +6457,11 @@ agentModelSummary?.addEventListener('click', (event) => {
   agentModelSummary.setAttribute('aria-expanded', open ? 'false' : 'true');
   if (!open) void fetchAgentModels();
 });
-agentModelRefresh?.addEventListener('click', () => void fetchAgentModels());
-agentQueueSend?.addEventListener('click', () => scheduleComposerMessage('queue'));
-agentSendNow?.addEventListener('click', () => scheduleComposerMessage('immediate'));
+agentModelRefresh?.addEventListener('click', () => {
+  if (!cancelAgentModelFetch()) void fetchAgentModels();
+});
 agentHumanVerificationResume?.addEventListener('click', () => void resumeHumanVerification());
+agentContextUsage?.addEventListener('click', () => requestAgentContextCompression());
 agentComposerForm?.addEventListener('submit', (event) => {
   event.preventDefault();
   if (agentBusy) {
@@ -5583,6 +6517,17 @@ extensionToolbar?.addEventListener('click', (event) => {
   }
 });
 bookmarkBar?.addEventListener('click', (event) => {
+  const overflow = event.target.closest('.bookmark-bar-overflow');
+  if (overflow) {
+    event.stopPropagation();
+    if (bookmarkMenu?.hidden === false && bookmarkMenuTrigger === overflow) {
+      closeBookmarkMenu();
+      return;
+    }
+    const bounds = overflow.getBoundingClientRect();
+    showBookmarkMenu({ type: 'overflow' }, bounds.left, bounds.bottom, overflow);
+    return;
+  }
   const button = event.target.closest('[data-bookmark-entry-id]');
   if (!button) {
     closeBookmarkMenu();
@@ -5590,34 +6535,42 @@ bookmarkBar?.addEventListener('click', (event) => {
   }
   const item = bookmarkById(button.dataset.bookmarkEntryId);
   if (!item) return;
-  if (item.type === 'folder') openBookmarkFolder(item.id, button);
-  else {
-    closeBookmarkMenu();
-    navigateAddress(item.url);
-  }
+  handleBookmarkEntryClick(event, item, button);
 });
+// 文件夹菜单打开时，鼠标移到收藏栏上的其他文件夹会直接切换展开的文件夹。
+bookmarkBar?.addEventListener('mouseover', (event) => {
+  if (bookmarkMenu?.hidden !== false || !bookmarkMenuContext?.showContents) return;
+  const button = event.target.closest('[data-bookmark-entry-type="folder"]');
+  if (!button || button === bookmarkMenuTrigger) return;
+  openBookmarkFolder(button.dataset.bookmarkEntryId, button);
+});
+if (bookmarkBar && typeof ResizeObserver === 'function') {
+  new ResizeObserver(() => layoutBookmarkBarOverflow()).observe(bookmarkBar);
+}
 bookmarkBar?.addEventListener('contextmenu', (event) => {
   const button = event.target.closest('[data-bookmark-entry-id]');
   const item = button ? bookmarkById(button.dataset.bookmarkEntryId) : null;
   if (item) showBookmarkContextMenu(event, item);
   else showBookmarkRootMenu(event);
 });
-bookmarkMenu?.addEventListener('click', (event) => {
+function handleBookmarkMenuClick(event) {
   const action = event.target.closest('[data-bookmark-action]');
   if (action) {
+    event.stopPropagation();
+    if (action.dataset.bookmarkAction === 'open-all' && action.dataset.bookmarkFolderId !== undefined) {
+      openAllBookmarksInFolder(action.dataset.bookmarkFolderId);
+      return;
+    }
     void runBookmarkMenuAction(action.dataset.bookmarkAction);
     return;
   }
   const entry = event.target.closest('[data-bookmark-entry-id]');
   const item = entry ? bookmarkById(entry.dataset.bookmarkEntryId) : null;
   if (!item) return;
-  if (item.type === 'folder') openBookmarkFolder(item.id);
-  else {
-    closeBookmarkMenu();
-    navigateAddress(item.url);
-  }
-});
-bookmarkMenu?.addEventListener('contextmenu', (event) => {
+  handleBookmarkEntryClick(event, item, entry);
+}
+
+function handleBookmarkMenuContextMenu(event) {
   const entry = event.target.closest('[data-bookmark-entry-id]');
   const item = entry ? bookmarkById(entry.dataset.bookmarkEntryId) : null;
   if (item) {
@@ -5628,13 +6581,33 @@ bookmarkMenu?.addEventListener('contextmenu', (event) => {
     event.preventDefault();
     return;
   }
-  const parentId = bookmarkMenuContext?.type === 'folder'
-    ? bookmarkMenuContext.id
-    : (bookmarkMenuContext?.parentId || '');
+  const panelFolderId = event.currentTarget.dataset.bookmarkFolderId;
+  const parentId = panelFolderId !== undefined
+    ? panelFolderId
+    : bookmarkMenuContext?.type === 'folder'
+      ? bookmarkMenuContext.id
+      : (bookmarkMenuContext?.parentId || '');
   showBookmarkRootMenu(event, parentId);
-});
-bookmarkMenu?.addEventListener('keydown', (event) => {
-  const items = [...bookmarkMenu.querySelectorAll('button:not(:disabled)')];
+}
+
+function handleBookmarkMenuKeydown(event) {
+  const panel = event.currentTarget;
+  const level = bookmarkPanelLevel(panel);
+  const focused = document.activeElement?.closest?.('[data-bookmark-entry-id]');
+  if (event.key === 'ArrowRight' && focused?.dataset.bookmarkEntryType === 'folder') {
+    event.preventDefault();
+    openBookmarkSubmenu(focused.dataset.bookmarkEntryId, focused, { focus: true });
+    return;
+  }
+  if ((event.key === 'ArrowLeft' || event.key === 'Escape') && level > 0) {
+    event.preventDefault();
+    event.stopPropagation();
+    const trigger = bookmarkSubmenus[level - 1]?.trigger;
+    closeBookmarkSubmenus(level - 1);
+    trigger?.focus({ preventScroll: true });
+    return;
+  }
+  const items = [...panel.querySelectorAll('button:not(:disabled)')];
   if (!items.length) return;
   const currentIndex = items.indexOf(document.activeElement);
   let targetIndex = currentIndex;
@@ -5645,7 +6618,27 @@ bookmarkMenu?.addEventListener('keydown', (event) => {
   else return;
   event.preventDefault();
   items[targetIndex]?.focus({ preventScroll: true });
-});
+}
+
+// 悬停在菜单中的文件夹上稍作停留即展开下一级，移到其他条目时收起更深的子菜单。
+function handleBookmarkMenuHover(event) {
+  const panel = event.currentTarget;
+  const entry = event.target.closest('[data-bookmark-entry-id], [data-bookmark-action]');
+  if (!entry) return;
+  const level = bookmarkPanelLevel(panel);
+  window.clearTimeout(bookmarkHoverTimer);
+  if (bookmarkSubmenus[level]?.trigger === entry) return;
+  bookmarkHoverTimer = window.setTimeout(() => {
+    if (!entry.isConnected) return;
+    if (entry.dataset.bookmarkEntryType === 'folder') openBookmarkSubmenu(entry.dataset.bookmarkEntryId, entry);
+    else closeBookmarkSubmenus(level);
+  }, 220);
+}
+
+bookmarkMenu?.addEventListener('click', handleBookmarkMenuClick);
+bookmarkMenu?.addEventListener('contextmenu', handleBookmarkMenuContextMenu);
+bookmarkMenu?.addEventListener('keydown', handleBookmarkMenuKeydown);
+bookmarkMenu?.addEventListener('mouseover', handleBookmarkMenuHover);
 document.querySelector('#open-extension-manager')?.addEventListener('click', () => {
   extensionsPanel.hidden = true;
   extensionsToggle?.setAttribute('aria-expanded', 'false');
@@ -5716,18 +6709,28 @@ async function runBrowserCommand(command) {
   closeBrowserMoreMenu();
   const currentUrl = activeTab()?.url || address?.value || '';
   switch (command) {
-    case 'new-tab': case 'new-window': case 'incognito': createTab('about:newtab'); break;
-    case 'passwords': navigateAddress('chrome://settings/passwords'); break;
-    case 'history': navigateAddress('chrome://history'); break;
+    case 'new-tab': createTab('about:newtab'); break;
+    case 'new-window': setShellStatus('当前版本暂不支持独立浏览器窗口', 'error'); break;
+    case 'incognito': setShellStatus('当前版本暂不支持无痕窗口', 'error'); break;
+    case 'passwords': await window.shellApi?.openExtensionManager?.('passwords'); break;
+    case 'history': openHistoryPage(); break;
     case 'downloads': downloadsToggle?.click(); break;
-    case 'bookmarks': navigateAddress('chrome://bookmarks'); break;
+    case 'bookmarks': {
+      bookmarkBarCommandVisible = true;
+      renderBookmarkBar();
+      const bounds = browserMoreToggle?.getBoundingClientRect?.();
+      window.setTimeout(() => showBookmarkMenu({ type: 'root' }, bounds?.left ?? 12, bounds?.bottom ?? 50), 0);
+      break;
+    }
     case 'extensions': extensionsToggle?.click(); break;
     case 'clear-data': {
       const result = await window.shellApi?.clearBrowsingData?.();
       if (result?.ok !== false) {
         recognizedNewTabSites = [];
         recentNewTabSearches = [];
+        navigationHistory = [];
         for (const item of tabItems) if (item.isNewTab) renderNewTabPage(item);
+        for (const item of tabItems) if (item.isHistory) renderHistoryPage(item);
       }
       setShellStatus(result?.ok === false ? (result.error || '删除浏览数据失败') : '浏览数据已删除', result?.ok === false ? 'error' : 'success');
       break;
@@ -5780,7 +6783,7 @@ shellInputModal?.addEventListener('click', (event) => {
 });
 document.addEventListener('click', (event) => {
   if (tabSwitcherPanel?.hidden === false && !event.target.closest('#tab-switcher-panel, #tab-menu')) setTabSwitcherOpen(false);
-  if (bookmarkMenu?.hidden === false && !event.target.closest('#bookmark-menu, #bookmark-bar')) closeBookmarkMenu();
+  if (bookmarkMenu?.hidden === false && !event.target.closest('#bookmark-menu, .bookmark-submenu, #bookmark-bar')) closeBookmarkMenu();
   if (passwordPromptState && !event.target.closest('#password-vault-prompt')) hidePasswordSavePrompt();
   if (addressSuggestions?.hidden === false && !event.target.closest('#address-form')) hideAddressSuggestions();
   if (agentModelPicker?.hidden === false && !event.target.closest('.agent-model-picker-wrap')) closeAgentModelPicker();
@@ -5987,8 +6990,12 @@ void refreshNewTabSearchHistory();
 shellInterfaceZoom = window.interfaceZoom?.createInterfaceZoom({
   indicator: zoomIndicator,
   applyZoom: (factor) => {
+    const item = activeTab();
+    if (item?.isNewTab) {
+      setNewTabZoomFactor(item.newTabView, factor);
+      return;
+    }
     setGuestZoomFactor(webview, factor);
-    showGuestZoomIndicator(webview, shellInterfaceZoom?.getPercentage());
   },
 });
 window.shellApi?.onInterfaceZoomCommand?.((command) => {

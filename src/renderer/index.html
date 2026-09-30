@@ -326,6 +326,8 @@
                     <div class="agent-field"><label class="field-label" for="manager-agent-steps">单轮最多工具步数</label><input class="text-input" id="manager-agent-steps" name="agentMaxSteps" type="number" min="0" step="1" /></div>
                   </div></details>
                   <div class="field-divider"><span>JEV 判断模型</span></div>
+                  <label class="checkbox-field agent-jev-toggle" for="manager-jev-enabled"><input id="manager-jev-enabled" name="jevAutoJudgeEnabled" type="checkbox" /><span>启用 JEV 模型</span></label>
+                  <p class="field-hint agent-jev-hint">关闭后，Agent 不会自动请求 JEV，也不会收到 JEV 判断工具。</p>
                   <div class="agent-form-grid agent-form-grid--jev">
                     <div class="agent-field"><label class="field-label" for="manager-jev-provider">JEV 来源</label><select class="text-input" id="manager-jev-provider" name="jevProvider"></select></div>
                     <div class="agent-field"><label class="field-label" for="manager-jev-base-url">JEV 接口地址</label><input class="text-input" id="manager-jev-base-url" name="jevBaseUrl" type="url" maxlength="2048" placeholder="https://api.typesafe.ai" autocomplete="off" /></div>
@@ -339,64 +341,133 @@
           </section>
 
           <section class="view" data-view="settings" aria-label="设置" hidden>
-            <div class="settings-layout">
-              <section class="panel settings-panel" aria-labelledby="engine-heading">
-                <div class="panel-heading">
-                  <div><p class="eyebrow">浏览器引擎</p><h3 id="engine-heading">Chromium 可执行文件</h3></div>
+            <div class="settings-page">
+              <header class="settings-intro">
+                <div>
+                  <p class="eyebrow">工作区设置</p>
+                  <h2>把常用设置放在手边</h2>
                 </div>
-                <div class="engine-mode-status" id="engine-mode-status" role="status">当前模式：内置 Electron Chromium</div>
-                <div class="input-with-button">
-                  <label class="sr-only" for="engine-path">Chromium 可执行文件路径</label>
-                  <input id="engine-path" type="text" placeholder="使用 Electron 内置 Chromium" autocomplete="off" />
-                  <button class="button button--secondary" id="choose-engine" type="button">选择文件</button>
-                  <button class="button button--secondary" id="install-browser" type="button">更新内核</button>
+                <span class="settings-local-note"><span class="status-dot status-dot--good" aria-hidden="true"></span>仅保存在本机</span>
+              </header>
+
+              <div class="settings-summary" aria-label="当前设置摘要">
+                <div class="settings-summary-item">
+                  <span class="settings-summary-label">浏览器</span>
+                  <strong id="settings-summary-engine">内置 Chromium</strong>
+                  <span id="settings-summary-engine-detail">使用应用自带内核</span>
                 </div>
-                <p class="field-hint engine-mode-hint" id="engine-update-status" hidden></p>
-                <div class="settings-actions"><button class="button button--primary" id="save-settings" type="button">保存设置</button></div>
+                <div class="settings-summary-item">
+                  <span class="settings-summary-label">代理核心</span>
+                  <strong id="settings-summary-core">检查中</strong>
+                  <span id="settings-summary-core-detail">新导入节点的默认核心</span>
+                </div>
+                <div class="settings-summary-item">
+                  <span class="settings-summary-label">外观</span>
+                  <strong id="settings-summary-theme">深海蓝</strong>
+                  <span id="settings-summary-theme-detail">实时预览，保存后生效</span>
+                </div>
+              </div>
+
+              <section class="settings-group" aria-labelledby="settings-runtime-heading">
+                <div class="settings-group-heading">
+                  <div><p class="eyebrow">第一步</p><h3 id="settings-runtime-heading">运行环境</h3></div>
+                </div>
+                <div class="settings-layout settings-runtime-layout">
+                  <section class="panel settings-panel settings-panel--engine" aria-labelledby="engine-heading">
+                    <div class="panel-heading">
+                      <div><p class="eyebrow">浏览器引擎</p><h3 id="engine-heading">Chromium 可执行文件</h3></div>
+                    </div>
+                    <div class="engine-mode-status" id="engine-mode-status" role="status">当前模式：内置 Electron Chromium</div>
+                    <div class="input-with-button">
+                      <label class="sr-only" for="engine-path">Chromium 可执行文件路径</label>
+                      <input id="engine-path" type="text" placeholder="使用 Electron 内置 Chromium" autocomplete="off" />
+                      <button class="button button--secondary" id="choose-engine" type="button">选择文件</button>
+                      <button class="button button--secondary" id="install-browser" type="button">更新内核</button>
+                    </div>
+                    <p class="field-hint engine-mode-hint" id="engine-update-status" hidden></p>
+                    <div class="settings-actions"><button class="button button--primary" id="save-settings" type="button">保存运行设置</button></div>
+                  </section>
+                  <section class="panel settings-panel settings-panel--core" aria-labelledby="core-heading">
+                    <div class="panel-heading"><div><p class="eyebrow">代理核心</p><h3 id="core-heading">双核心运行时 <span class="status-badge status-badge--ready" id="core-status">检查中</span></h3></div></div>
+                    <label class="field-label" for="default-core-settings">新导入节点默认核心</label>
+                    <select class="text-input" id="default-core-settings"><option value="xray">Xray-core</option><option value="singbox">sing-box</option></select>
+                    <details class="settings-details settings-details--core">
+                      <summary>管理核心路径与版本</summary>
+                      <div class="settings-details-content">
+                        <div class="core-field-heading"><label class="field-label" for="xray-path">Xray-core 路径</label><span class="core-version" id="xray-version">当前版本：检测中</span></div>
+                        <div class="input-with-button"><input id="xray-path" type="text" placeholder="优先使用 vendor/cores 内置版本" autocomplete="off" /><button class="button button--secondary" id="choose-xray" type="button">选择</button><button class="button button--secondary" id="install-xray" type="button">立即更新</button></div>
+                        <div class="core-field-heading"><label class="field-label" for="singbox-path">sing-box 路径</label><span class="core-version" id="singbox-version">当前版本：检测中</span></div>
+                        <div class="input-with-button"><input id="singbox-path" type="text" placeholder="优先使用 vendor/cores 内置版本" autocomplete="off" /><button class="button button--secondary" id="choose-singbox" type="button">选择</button><button class="button button--secondary" id="install-singbox" type="button">立即更新</button></div>
+                      </div>
+                    </details>
+                  </section>
+                </div>
               </section>
-              <section class="panel settings-panel" aria-labelledby="core-heading">
-                <div class="panel-heading"><div><p class="eyebrow">代理核心</p><h3 id="core-heading">双核心运行时 <span class="status-badge status-badge--ready" id="core-status">检查中</span></h3></div></div>
-                <label class="field-label" for="default-core-settings">新导入节点默认核心</label>
-                <select class="text-input" id="default-core-settings"><option value="xray">Xray-core</option><option value="singbox">sing-box</option></select>
-                <div class="core-field-heading"><label class="field-label" for="xray-path">Xray-core 路径</label><span class="core-version" id="xray-version">当前版本：检测中</span></div>
-                <div class="input-with-button"><input id="xray-path" type="text" placeholder="优先使用 vendor/cores 内置版本" autocomplete="off" /><button class="button button--secondary" id="choose-xray" type="button">选择</button><button class="button button--secondary" id="install-xray" type="button">立即更新</button></div>
-                <div class="core-field-heading"><label class="field-label" for="singbox-path">sing-box 路径</label><span class="core-version" id="singbox-version">当前版本：检测中</span></div>
-                <div class="input-with-button"><input id="singbox-path" type="text" placeholder="优先使用 vendor/cores 内置版本" autocomplete="off" /><button class="button button--secondary" id="choose-singbox" type="button">选择</button><button class="button button--secondary" id="install-singbox" type="button">立即更新</button></div>
+
+              <section class="settings-group" aria-labelledby="settings-data-heading">
+                <div class="settings-group-heading">
+                  <div><p class="eyebrow">按需使用</p><h3 id="settings-data-heading">数据工具</h3></div>
+                </div>
+                <section class="panel settings-panel bookmark-import-panel" aria-labelledby="bookmark-import-heading">
+                  <div class="panel-heading">
+                    <div><p class="eyebrow">收藏迁移</p><h3 id="bookmark-import-heading">导入浏览器书签</h3></div>
+                    <span class="status-badge" id="bookmark-import-status">等待加载来源</span>
+                  </div>
+                  <p class="field-hint">选择一个目标环境和一个或多个来源。导入只执行一次，不会持续读取来源文件。</p>
+                  <div class="bookmark-import-grid">
+                    <label class="bookmark-import-field"><span class="field-label">目标环境</span><select class="text-input" id="bookmark-import-profile" aria-label="书签导入目标环境"></select><span class="field-hint" id="bookmark-import-profile-hint"></span></label>
+                    <div class="bookmark-import-source-field"><div class="field-label bookmark-import-source-label">书签来源 <span class="optional" id="bookmark-import-source-count"></span></div><div class="bookmark-import-sources" id="bookmark-import-sources" role="group" aria-label="书签来源"></div><p class="field-hint bookmark-import-empty" id="bookmark-import-source-empty" hidden>未检测到来源，请选择书签文件。</p><p class="field-hint bookmark-import-error" id="bookmark-import-source-error" hidden></p></div>
+                  </div>
+                  <div class="bookmark-import-toolbar"><button class="button button--secondary" id="bookmark-import-refresh" type="button"><svg class="svg-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg> 刷新来源</button><button class="button button--secondary" id="bookmark-import-files" type="button"><svg class="svg-icon" aria-hidden="true"><use href="#icon-upload"></use></svg> 选择书签文件</button></div>
+                  <div class="bookmark-import-result" id="bookmark-import-result" role="status" aria-live="polite" hidden></div>
+                  <div class="settings-actions bookmark-import-actions"><button class="button button--primary" id="bookmark-import-submit" type="button"><svg class="svg-icon" aria-hidden="true"><use href="#icon-download"></use></svg> 导入所选书签</button></div>
+                </section>
               </section>
-              <section class="panel theme-panel" aria-labelledby="theme-heading">
-                <div class="panel-heading theme-panel-heading">
-                  <div><p class="eyebrow">外观与主题</p><h3 id="theme-heading">主题配置</h3></div>
-                  <span class="theme-status" id="theme-background-name">未上传背景图片</span>
+
+              <section class="settings-group" aria-labelledby="settings-appearance-heading">
+                <div class="settings-group-heading">
+                  <div><p class="eyebrow">最后调整</p><h3 id="settings-appearance-heading">外观</h3></div>
                 </div>
-                <div class="theme-preview" id="theme-preview" aria-hidden="true">
-                  <div class="theme-preview-top"><span class="theme-preview-dot"></span><span class="theme-preview-dot theme-preview-dot--muted"></span><span class="theme-preview-line"></span></div>
-                  <div class="theme-preview-grid"><div class="theme-preview-card"><span></span><strong></strong><i></i></div><div class="theme-preview-card theme-preview-card--accent"><span></span><strong></strong><i></i></div><div class="theme-preview-card theme-preview-card--secondary"><span></span><strong></strong><i></i></div></div>
-                </div>
-                <div class="theme-toolbar">
-                  <label class="theme-select-field"><span class="field-label">主题预设</span><select class="text-input" id="theme-preset"><option value="midnight">深海蓝 · 参考主题</option><option value="ocean">青花海 · 高亮主题</option><option value="ink">墨蓝灰 · 克制主题</option><option value="custom">自定义</option></select></label>
-                  <div class="theme-upload"><span class="field-label">自定义背景</span><div class="theme-upload-actions"><input id="theme-background-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" hidden /><button class="button button--secondary" id="theme-upload-button" type="button"><svg class="svg-icon" aria-hidden="true"><use href="#icon-upload"></use></svg> 上传图片</button><button class="button button--secondary" id="theme-clear-background" type="button"><svg class="svg-icon" aria-hidden="true"><use href="#icon-close"></use></svg> 清除</button></div></div>
-                </div>
-                <div class="theme-color-grid">
-                  <label class="theme-color-field" for="theme-background"><span>页面背景</span><input id="theme-background" type="color" /></label>
-                  <label class="theme-color-field" for="theme-surface"><span>面板底色</span><input id="theme-surface" type="color" /></label>
-                  <label class="theme-color-field" for="theme-surface-soft"><span>浮层底色</span><input id="theme-surface-soft" type="color" /></label>
-                  <label class="theme-color-field" for="theme-primary"><span>主色</span><input id="theme-primary" type="color" /></label>
-                  <label class="theme-color-field" for="theme-primary-hover"><span>主色高亮</span><input id="theme-primary-hover" type="color" /></label>
-                  <label class="theme-color-field" for="theme-secondary"><span>辅助色</span><input id="theme-secondary" type="color" /></label>
-                  <label class="theme-color-field" for="theme-success"><span>成功色</span><input id="theme-success" type="color" /></label>
-                  <label class="theme-color-field" for="theme-warning"><span>警示色</span><input id="theme-warning" type="color" /></label>
-                  <label class="theme-color-field" for="theme-danger"><span>错误色</span><input id="theme-danger" type="color" /></label>
-                  <label class="theme-color-field" for="theme-text"><span>正文色</span><input id="theme-text" type="color" /></label>
-                  <label class="theme-color-field" for="theme-text-muted"><span>说明色</span><input id="theme-text-muted" type="color" /></label>
-                  <label class="theme-color-field" for="theme-text-faint"><span>弱化色</span><input id="theme-text-faint" type="color" /></label>
-                </div>
-                <div class="theme-range-grid">
-                  <label class="theme-range-field" for="theme-background-opacity"><span>背景图片透明度 <output id="theme-opacity-value">72%</output></span><input id="theme-background-opacity" type="range" min="0" max="1" step="0.01" /></label>
-                  <label class="theme-range-field" for="theme-blur"><span>玻璃模糊 <output id="theme-blur-value">18px</output></span><input id="theme-blur" type="range" min="0" max="40" step="1" /></label>
-                  <label class="theme-range-field" for="theme-radius"><span>圆角 <output id="theme-radius-value">12px</output></span><input id="theme-radius" type="range" min="4" max="24" step="1" /></label>
-                </div>
-                <p class="field-hint">颜色与背景会实时预览，点击保存后跨重启生效。图片仅保存在本机状态文件中，建议使用 5 MB 以内的图片。</p>
-                <div class="settings-actions theme-actions"><button class="button button--secondary" id="theme-reset" type="button">恢复参考主题</button><button class="button button--primary" id="save-theme" type="button"><svg class="svg-icon" aria-hidden="true"><use href="#icon-check"></use></svg> 保存主题</button></div>
+                <section class="panel theme-panel" aria-labelledby="theme-heading">
+                  <div class="panel-heading theme-panel-heading">
+                    <div><p class="eyebrow">外观与主题</p><h3 id="theme-heading">主题配置</h3></div>
+                    <span class="theme-status" id="theme-background-name">未上传背景图片</span>
+                  </div>
+                  <div class="theme-preview" id="theme-preview" aria-hidden="true">
+                    <div class="theme-preview-top"><span class="theme-preview-dot"></span><span class="theme-preview-dot theme-preview-dot--muted"></span><span class="theme-preview-line"></span></div>
+                    <div class="theme-preview-grid"><div class="theme-preview-card"><span></span><strong></strong><i></i></div><div class="theme-preview-card theme-preview-card--accent"><span></span><strong></strong><i></i></div><div class="theme-preview-card theme-preview-card--secondary"><span></span><strong></strong><i></i></div></div>
+                  </div>
+                  <div class="theme-toolbar">
+                    <label class="theme-select-field"><span class="field-label">主题预设</span><select class="text-input" id="theme-preset"><option value="midnight">深海蓝 · 参考主题</option><option value="ocean">青花海 · 高亮主题</option><option value="ink">墨蓝灰 · 克制主题</option><option value="custom">自定义</option></select></label>
+                    <div class="theme-upload"><span class="field-label">自定义背景</span><div class="theme-upload-actions"><input id="theme-background-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" hidden /><button class="button button--secondary" id="theme-upload-button" type="button"><svg class="svg-icon" aria-hidden="true"><use href="#icon-upload"></use></svg> 上传图片</button><button class="button button--secondary" id="theme-clear-background" type="button"><svg class="svg-icon" aria-hidden="true"><use href="#icon-close"></use></svg> 清除</button></div></div>
+                  </div>
+                  <details class="settings-details settings-details--theme">
+                    <summary>微调颜色、透明度和圆角</summary>
+                    <div class="settings-details-content">
+                      <div class="theme-color-grid">
+                        <label class="theme-color-field" for="theme-background"><span>页面背景</span><input id="theme-background" type="color" /></label>
+                        <label class="theme-color-field" for="theme-surface"><span>面板底色</span><input id="theme-surface" type="color" /></label>
+                        <label class="theme-color-field" for="theme-surface-soft"><span>浮层底色</span><input id="theme-surface-soft" type="color" /></label>
+                        <label class="theme-color-field" for="theme-primary"><span>主色</span><input id="theme-primary" type="color" /></label>
+                        <label class="theme-color-field" for="theme-primary-hover"><span>主色高亮</span><input id="theme-primary-hover" type="color" /></label>
+                        <label class="theme-color-field" for="theme-secondary"><span>辅助色</span><input id="theme-secondary" type="color" /></label>
+                        <label class="theme-color-field" for="theme-success"><span>成功色</span><input id="theme-success" type="color" /></label>
+                        <label class="theme-color-field" for="theme-warning"><span>警示色</span><input id="theme-warning" type="color" /></label>
+                        <label class="theme-color-field" for="theme-danger"><span>错误色</span><input id="theme-danger" type="color" /></label>
+                        <label class="theme-color-field" for="theme-text"><span>正文色</span><input id="theme-text" type="color" /></label>
+                        <label class="theme-color-field" for="theme-text-muted"><span>说明色</span><input id="theme-text-muted" type="color" /></label>
+                        <label class="theme-color-field" for="theme-text-faint"><span>弱化色</span><input id="theme-text-faint" type="color" /></label>
+                      </div>
+                      <div class="theme-range-grid">
+                        <label class="theme-range-field" for="theme-background-opacity"><span>背景图片透明度 <output id="theme-opacity-value">72%</output></span><input id="theme-background-opacity" type="range" min="0" max="1" step="0.01" /></label>
+                        <label class="theme-range-field" for="theme-blur"><span>玻璃模糊 <output id="theme-blur-value">18px</output></span><input id="theme-blur" type="range" min="0" max="40" step="1" /></label>
+                        <label class="theme-range-field" for="theme-radius"><span>圆角 <output id="theme-radius-value">12px</output></span><input id="theme-radius" type="range" min="4" max="24" step="1" /></label>
+                      </div>
+                    </div>
+                  </details>
+                  <p class="field-hint">颜色与背景会实时预览，点击保存后跨重启生效。图片仅保存在本机状态文件中，建议使用 5 MB 以内的图片。</p>
+                  <div class="settings-actions theme-actions"><button class="button button--secondary" id="theme-reset" type="button">恢复参考主题</button><button class="button button--primary" id="save-theme" type="button"><svg class="svg-icon" aria-hidden="true"><use href="#icon-check"></use></svg> 保存外观</button></div>
+                </section>
               </section>
             </div>
           </section>
@@ -596,9 +667,12 @@
           <main class="store-browser-main">
             <div class="store-browser-heading">
               <div><p class="eyebrow">Chrome 扩展</p><h3 id="extension-store-heading">无障碍 <span id="extension-store-count">0</span></h3><p class="field-hint" id="extension-store-status">正在准备插件列表…</p></div>
-              <div class="store-view-toggle" role="group" aria-label="结果视图">
-                <button type="button" data-action="toggle-extension-store-view" data-id="list" title="列表视图" aria-label="列表视图"><svg class="svg-icon"><use href="#icon-list"></use></svg></button>
-                <button type="button" class="is-active" data-action="toggle-extension-store-view" data-id="grid" title="网格视图" aria-label="网格视图"><svg class="svg-icon"><use href="#icon-grid"></use></svg></button>
+              <div class="store-browser-heading-actions">
+                <a class="button button--secondary store-browser-official-link" id="extension-store-official-link" href="https://chromewebstore.google.com/" target="_blank" rel="noreferrer noopener"><svg class="svg-icon" aria-hidden="true"><use href="#icon-link"></use></svg> 打开 Chrome Web Store</a>
+                <div class="store-view-toggle" role="group" aria-label="结果视图">
+                  <button type="button" data-action="toggle-extension-store-view" data-id="list" title="列表视图" aria-label="列表视图"><svg class="svg-icon"><use href="#icon-list"></use></svg></button>
+                  <button type="button" class="is-active" data-action="toggle-extension-store-view" data-id="grid" title="网格视图" aria-label="网格视图"><svg class="svg-icon"><use href="#icon-grid"></use></svg></button>
+                </div>
               </div>
             </div>
             <div class="extension-store-results store-results-grid" id="extension-store-results"></div>

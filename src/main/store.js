@@ -59,6 +59,7 @@ const DEFAULT_STATE = Object.freeze({
     agentProfileIds: [],
     // 仅保存按环境覆盖的配置。密钥仍以 enc:/plain: 形式保存在主进程状态中。
     agentProfileOverrides: {},
+    jevAutoJudgeEnabled: true,
     jevProvider: 'typesafe',
     jevBaseUrl: 'https://api.typesafe.ai',
     jevModel: 'jev-latest',
@@ -69,6 +70,8 @@ const DEFAULT_STATE = Object.freeze({
     newTabSites: DEFAULT_NEW_TAB_SITES.map((item) => ({ ...item })),
     newTabBanner: { type: 'image', source: '' },
     newTabDisplayMode: 'immersive',
+    newTabBackgroundOpacity: 0.72,
+    newTabBackgroundBlur: 18,
     browserShortcuts: {
       reload: 'F5',
       devtools: 'F12',
@@ -252,21 +255,54 @@ function normalizeNewTabDisplayMode(value, fallback = DEFAULT_STATE.settings.new
   return candidate === 'minimal' || candidate === 'immersive' ? candidate : inherited;
 }
 
+function normalizeNewTabBackgroundOpacity(value, fallback = DEFAULT_STATE.settings.newTabBackgroundOpacity) {
+  const inherited = Number.isFinite(Number(fallback))
+    ? Math.round(Math.min(1, Math.max(0, Number(fallback))) * 100) / 100
+    : DEFAULT_STATE.settings.newTabBackgroundOpacity;
+  const number = Number(value);
+  return Number.isFinite(number)
+    ? Math.round(Math.min(1, Math.max(0, number)) * 100) / 100
+    : inherited;
+}
+
+function normalizeNewTabBackgroundBlur(value, fallback = DEFAULT_STATE.settings.newTabBackgroundBlur) {
+  const inherited = Number.isFinite(Number(fallback))
+    ? Math.round(Math.min(40, Math.max(0, Number(fallback))))
+    : DEFAULT_STATE.settings.newTabBackgroundBlur;
+  const number = Number(value);
+  return Number.isFinite(number)
+    ? Math.round(Math.min(40, Math.max(0, number)))
+    : inherited;
+}
+
 function mergeState(input) {
   const source = input && typeof input === 'object' ? input : {};
   const records = (value) => (Array.isArray(value)
     ? value.filter((item) => item && typeof item === 'object' && !Array.isArray(item))
     : []);
   const sourceSettings = source.settings && typeof source.settings === 'object' ? source.settings : {};
+  const theme = normalizeTheme(sourceSettings.theme, DEFAULT_STATE.settings.theme);
   const settings = {
     ...DEFAULT_STATE.settings,
     ...sourceSettings,
-    theme: normalizeTheme(sourceSettings.theme, DEFAULT_STATE.settings.theme),
+    theme,
     searchEngines: normalizeSearchEngines(sourceSettings.searchEngines),
     bookmarkBarAlwaysVisible: sourceSettings.bookmarkBarAlwaysVisible === true,
     newTabSites: normalizeNewTabSites(sourceSettings.newTabSites),
     newTabBanner: normalizeNewTabBanner(sourceSettings.newTabBanner, DEFAULT_STATE.settings.newTabBanner),
     newTabDisplayMode: normalizeNewTabDisplayMode(sourceSettings.newTabDisplayMode),
+    newTabBackgroundOpacity: normalizeNewTabBackgroundOpacity(
+      Object.prototype.hasOwnProperty.call(sourceSettings, 'newTabBackgroundOpacity')
+        ? sourceSettings.newTabBackgroundOpacity
+        : theme.backgroundOpacity,
+      theme.backgroundOpacity,
+    ),
+    newTabBackgroundBlur: normalizeNewTabBackgroundBlur(
+      Object.prototype.hasOwnProperty.call(sourceSettings, 'newTabBackgroundBlur')
+        ? sourceSettings.newTabBackgroundBlur
+        : theme.blur,
+      theme.blur,
+    ),
   };
   // 迁移早期浏览器设置里的 Agent 字段；新字段优先，旧字段只作为回退。
   if (!settings.agentBaseUrl && settings.agentApiUrl) settings.agentBaseUrl = settings.agentApiUrl;
@@ -290,6 +326,7 @@ function mergeState(input) {
       value && typeof value === 'object' && !Array.isArray(value)
     )))
     : {};
+  settings.jevAutoJudgeEnabled = settings.jevAutoJudgeEnabled !== false;
   settings.jevProvider = settings.jevProvider === 'custom' ? 'custom' : 'typesafe';
   settings.jevBaseUrl = typeof settings.jevBaseUrl === 'string' ? settings.jevBaseUrl.trim() : DEFAULT_STATE.settings.jevBaseUrl;
   settings.jevModel = typeof settings.jevModel === 'string' ? settings.jevModel.trim() : DEFAULT_STATE.settings.jevModel;
@@ -351,4 +388,6 @@ module.exports = {
   normalizeNewTabSites,
   normalizeNewTabBanner,
   normalizeNewTabDisplayMode,
+  normalizeNewTabBackgroundOpacity,
+  normalizeNewTabBackgroundBlur,
 };
