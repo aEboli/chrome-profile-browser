@@ -30,6 +30,22 @@ test('parses common v2rayN URI protocols into Xray nodes', () => {
   assert.equal(ss.coreConfig.method, 'chacha20-ietf-poly1305');
 });
 
+test('defaults Trojan URI security to TLS only when no security option is supplied', () => {
+  const implicitTls = parseCoreUri('trojan://password@example.com:443#trojan', 'paste');
+  assert.equal(implicitTls.status, 'supported');
+  assert.equal(implicitTls.coreConfig.security, 'tls');
+  assert.equal(implicitTls.coreConfig.tls, true);
+
+  for (const uri of [
+    'trojan://password@example.com:443?security=none#trojan',
+    'trojan://password@example.com:443?tls=false#trojan',
+  ]) {
+    const explicitNoTls = parseCoreUri(uri, 'paste');
+    assert.equal(explicitNoTls.status, 'unsupported');
+    assert.match(explicitNoTls.reason, /必须启用 TLS/);
+  }
+});
+
 test('parses Clash core proxy objects and base64 subscriptions', () => {
   const yaml = `proxies:\n  - name: vless-edge\n    type: vless\n    server: edge.example\n    port: 443\n    uuid: ${UUID}\n    network: ws\n    tls: true\n    ws-opts:\n      path: /chat\n      headers:\n        Host: cdn.example\n`;
   const result = parseV2raySubscriptionContent(yaml, { source: 'paste' });

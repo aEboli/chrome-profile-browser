@@ -160,6 +160,40 @@ function crx3PublicKeys(header) {
   return keys;
 }
 
+function protoBytesField(buffer, requestedField) {
+  let offset = 0;
+  while (offset < buffer.length) {
+    const tag = readProtoVarint(buffer, offset);
+    if (!tag) return null;
+    offset = tag.offset;
+    const field = Math.floor(tag.value / 8);
+    const wireType = tag.value % 8;
+    if (wireType === 2) {
+      const length = readProtoVarint(buffer, offset);
+      if (!length) return null;
+      offset = length.offset;
+      const end = offset + length.value;
+      if (!Number.isSafeInteger(end) || end > buffer.length) return null;
+      if (field === requestedField) return buffer.subarray(offset, end);
+      offset = end;
+      continue;
+    }
+    if (wireType === 0) {
+      const value = readProtoVarint(buffer, offset);
+      if (!value) return null;
+      offset = value.offset;
+      continue;
+    }
+    if (wireType === 1 || wireType === 5) {
+      offset += wireType === 1 ? 8 : 4;
+      if (offset > buffer.length) return null;
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
 function extensionIdFromArchive(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 16 || buffer.subarray(0, 4).toString('ascii') !== 'Cr24') return '';
   const version = buffer.readUInt32LE(4);
@@ -175,7 +209,14 @@ function extensionIdFromArchive(buffer) {
   const headerSize = buffer.readUInt32LE(8);
   const headerEnd = 12 + headerSize;
   if (!headerSize || headerEnd > buffer.length) return '';
-  for (const publicKey of crx3PublicKeys(buffer.subarray(12, headerEnd))) {
+  const header = buffer.subarray(12, headerEnd);
+  const signedHeaderData = protoBytesField(header, 10000);
+  const signedId = signedHeaderData && protoBytesField(signedHeaderData, 1);
+  if (signedHeaderData && (!signedId || signedId.length !== 16)) return '';
+  const publicKeys = crx3PublicKeys(header);
+  if (!signedHeaderData && publicKeys.length !== 1) return '';
+  for (const publicKey of publicKeys) {
+    if (signedId && !crypto.createHash('sha256').update(publicKey).digest().subarray(0, 16).equals(signedId)) continue;
     const extensionId = extensionIdFromPublicKey(publicKey);
     if (extensionId) return extensionId;
   }

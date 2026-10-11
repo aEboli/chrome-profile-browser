@@ -5,7 +5,6 @@ const {
   PROTOCOLS,
   REASONING_EFFORTS,
   TOOL_DEFINITIONS,
-  agentToolsForJev,
   authHeaders,
   buildAgentRequest,
   modelsEndpointFor,
@@ -42,10 +41,7 @@ test('lists and normalizes all supported agent protocols', () => {
   assert.equal(modelsEndpointFor('google-gemini', 'https://api.example.test/v1beta'), 'https://api.example.test/v1beta/models');
   const controls = TOOL_DEFINITIONS.find((tool) => tool.name === 'browser_configure_shortcuts');
   assert.ok(controls);
-  const jev = TOOL_DEFINITIONS.find((tool) => tool.name === 'jev_decide');
-  assert.deepEqual(jev.parameters.required, ['state', 'questions']);
-  assert.ok(agentToolsForJev(true).some((tool) => tool.name === 'jev_decide'));
-  assert.ok(!agentToolsForJev(false).some((tool) => tool.name === 'jev_decide'));
+  assert.ok(!TOOL_DEFINITIONS.some((tool) => /jev/i.test(tool.name)));
   assert.deepEqual(controls.parameters.properties.gestureAction.enum, ['back', 'forward', 'reload', 'devtools']);
   const click = TOOL_DEFINITIONS.find((tool) => tool.name === 'browser_click');
   assert.deepEqual(click.parameters.properties.clickCount, { type: 'integer', minimum: 1 });
@@ -95,6 +91,31 @@ test('builds streaming requests for every supported agent protocol', () => {
     } else {
       assert.equal(request.body.stream, true);
     }
+  }
+});
+
+test('adds a pasted image to user content for every supported image protocol', () => {
+  const images = [
+    { dataUrl: 'data:image/png;base64,aGVsbG8=' },
+    { dataUrl: 'data:image/jpeg;base64,d29ybGQ=' },
+  ];
+  for (const protocol of PROTOCOLS.map((item) => item.id)) {
+    const request = buildAgentRequest({
+      ...baseInput,
+      protocol,
+      messages: [{ role: 'user', content: '描述这张图片', images }],
+    });
+    const serialized = JSON.stringify(request.body);
+    assert.match(serialized, /aGVsbG8=/, protocol);
+    assert.match(serialized, /d29ybGQ=/, protocol);
+    assert.match(serialized, /描述这张图片/, protocol);
+
+    const imageOnly = buildAgentRequest({
+      ...baseInput,
+      protocol,
+      messages: [{ role: 'user', content: '', images }],
+    });
+    assert.match(JSON.stringify(imageOnly.body), /aGVsbG8=/, `${protocol} image-only`);
   }
 });
 
@@ -191,6 +212,21 @@ test('parses Responses text and function_call output items', () => {
     arguments: '{"x":12,"y":34}',
   }]);
   assert.equal(result.finishReason, 'completed');
+  assert.equal(result.truncated, false);
+});
+
+test('recognizes output token limits across all supported protocols', () => {
+  const cases = [
+    ['openai-chat-completions', { choices: [{ finish_reason: 'length', message: { content: 'part' } }] }],
+    ['openai-responses', { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output_text: 'part' }],
+    ['anthropic-messages', { stop_reason: 'max_tokens', content: [{ type: 'text', text: 'part' }] }],
+    ['google-gemini', { candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: 'part' }] } }] }],
+  ];
+  for (const [protocol, payload] of cases) {
+    const result = parseAgentResponse(protocol, payload);
+    assert.equal(result.truncated, true, protocol);
+    assert.equal(result.text, 'part', protocol);
+  }
 });
 
 test('reuses Responses output items before appending tool results', () => {

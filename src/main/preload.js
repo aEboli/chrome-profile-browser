@@ -44,11 +44,13 @@ contextBridge.exposeInMainWorld('api', {
     return true;
   },
   saveProfile: (profile) => invoke('profile:save', profile),
+  setProfileEngineMode: (payload) => invoke('profile:set-engine-mode', payload),
   deleteProfile: (profileId) => invoke('profile:delete', profileId),
   launchProfile: (profileId) => invoke('profile:launch', profileId),
   resolveProfileLaunchConfirmation: (payload) => invoke('profile:resolve-launch-confirmation', payload),
   stopProfile: (profileId) => invoke('profile:stop', profileId),
   switchProfileNode: (payload) => invoke('profile:switch-node', payload),
+  switchProfileSubscription: (payload) => invoke('profile:switch-subscription', payload),
   checkProfileConnection: (profileId) => invoke('profile:check-connection', profileId),
   checkDirectConnection: () => invoke('connection:check-direct'),
   importSubscription: (payload) => invoke('subscription:import', payload),
@@ -93,6 +95,11 @@ contextBridge.exposeInMainWorld('api', {
     const listener = (_event, update) => callback(update);
     ipcRenderer.on('browser:update-available', listener);
     return () => ipcRenderer.removeListener('browser:update-available', listener);
+  },
+  onProfileAutoFailover: (callback) => {
+    const listener = (_event, update) => callback(update);
+    ipcRenderer.on('profile:auto-failover', listener);
+    return () => ipcRenderer.removeListener('profile:auto-failover', listener);
   },
   onConfirmationRequest: (callback) => {
     const listener = (_event, request) => callback(request);

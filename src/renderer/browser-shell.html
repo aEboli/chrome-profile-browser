@@ -53,6 +53,11 @@
       <symbol id="shell-icon-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
       <symbol id="shell-icon-pin" viewBox="0 0 24 24"><path d="M8 3h8l-1 5 3 3v2H6v-2l3-3-1-5Z"/><path d="M12 13v8"/></symbol>
       <symbol id="shell-icon-more" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></symbol>
+      <symbol id="shell-icon-volume" viewBox="0 0 24 24"><path d="M11 4 6 8H3v8h3l5 4ZM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14"/></symbol>
+      <symbol id="shell-icon-muted" viewBox="0 0 24 24"><path d="M11 4 6 8H3v8h3l5 4ZM16 9l6 6M22 9l-6 6"/></symbol>
+      <symbol id="shell-icon-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+      <symbol id="shell-icon-play" viewBox="0 0 24 24"><path d="m7 4 14 8-14 8Z"/></symbol>
+      <symbol id="shell-icon-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
     </svg>
     <header class="tab-strip" aria-label="浏览器标签">
       <button id="tab-menu" class="icon-button tab-menu-button" type="button" title="搜索标签页 Ctrl+Shift+A" aria-label="搜索标签页" aria-haspopup="dialog" aria-expanded="false" aria-controls="tab-switcher-panel"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-chevron-down"></use></svg></button>
@@ -98,25 +103,26 @@
         <span class="zoom-indicator-slot"><span id="zoom-indicator" class="zoom-indicator" role="status" aria-live="polite" hidden></span></span>
       </div>
       <div class="identity">
-        <div class="identity-primary">
-          <span id="profile-name" class="identity-name">浏览器环境</span>
-          <span id="connection-latency" class="identity-latency">未测</span>
-        </div>
-        <span class="connection-details" aria-label="连接位置">
-          <span class="connection-detail"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-globe"></use></svg><span id="connection-country">系统直连</span></span>
-          <span class="connection-detail"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-network"></use></svg><span id="connection-ip">未解析</span></span>
-        </span>
+        <span id="profile-name" class="identity-name">浏览器环境</span>
+        <button id="connection-details" class="connection-details" type="button" title="左键重新检测连接，右键手动切换线路" aria-label="左键重新检测连接，右键手动切换线路" aria-haspopup="menu" aria-expanded="false" aria-controls="connection-route-menu">
+          <span class="connection-detail connection-detail--latency"><span id="connection-latency" class="identity-latency">未测</span></span>
+          <span class="connection-detail connection-detail--country"><span id="connection-country">系统直连</span></span>
+          <span class="connection-detail connection-detail--ip"><span id="connection-ip">未解析</span></span>
+        </button>
+        <span id="connection-refresh-spinner" class="connection-refresh-spinner" aria-hidden="true" hidden></span>
+        <span id="connection-refresh-notice" class="connection-refresh-notice" role="status" aria-live="polite" hidden></span>
         <button id="browser-more-toggle" class="icon-button browser-more-button" type="button" title="更多浏览器功能" aria-label="更多浏览器功能" aria-expanded="false" aria-controls="browser-more-menu"><span aria-hidden="true">···</span></button>
       </div>
       <span class="sr-only" id="shell-status" title="就绪" aria-label="就绪" role="status">就绪</span>
     </header>
+    <aside id="connection-route-menu" class="connection-route-menu" role="menu" aria-label="手动切换连接线路" hidden></aside>
     <aside id="browser-more-menu" class="browser-more-menu" hidden aria-label="更多浏览器功能">
       <button type="button" data-browser-command="new-tab">打开新的标签页 <kbd>Ctrl+T</kbd></button>
-      <button type="button" data-browser-command="new-window">打开新的窗口 <kbd>Ctrl+N</kbd></button>
-      <button type="button" data-browser-command="incognito">打开新的无痕窗口 <kbd>Ctrl+Shift+N</kbd></button>
+      <button type="button" data-browser-command="new-window" disabled title="当前环境使用单个浏览器窗口">打开新的窗口 <kbd>Ctrl+N</kbd></button>
+      <button type="button" data-browser-command="incognito" disabled title="当前环境使用独立的持久化会话">打开新的无痕窗口 <kbd>Ctrl+Shift+N</kbd></button>
       <div class="browser-more-separator"></div>
       <button type="button" data-browser-command="passwords">密码和自动填充 <span>›</span></button>
-      <button type="button" data-browser-command="history">历史记录 <span>›</span></button>
+      <button type="button" data-browser-command="history">历史记录 <kbd>Ctrl+H</kbd></button>
       <button type="button" data-browser-command="downloads">下载内容 <kbd>Ctrl+J</kbd></button>
       <button type="button" data-browser-command="bookmarks">书签和清单 <span>›</span></button>
       <button type="button" data-browser-command="extensions">扩展程序 <span>›</span></button>
@@ -127,7 +133,7 @@
       <button type="button" data-browser-command="fullscreen">全屏 <kbd>F11</kbd></button>
       <button type="button" data-browser-command="print">打印… <kbd>Ctrl+P</kbd></button>
       <button type="button" data-browser-command="translate">翻译…</button>
-      <button type="button" data-browser-command="find">查找和修改 <span>›</span></button>
+      <button type="button" data-browser-command="find">在页面中查找 <kbd>Ctrl+F</kbd></button>
       <button type="button" data-browser-command="share">投放、保存和分享 <span>›</span></button>
       <button type="button" data-browser-command="more-tools">更多工具 <span>›</span></button>
       <div class="browser-more-separator"></div>
@@ -138,13 +144,24 @@
     <aside id="extensions-panel" class="extensions-panel" hidden aria-label="插件列表">
       <div class="extensions-panel-heading"><strong>扩展程序</strong><button id="extensions-close" class="agent-icon-button" type="button" title="关闭" aria-label="关闭插件列表"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-close"></use></svg></button></div>
       <p class="extensions-panel-summary">固定的插件会显示在浏览器工具栏中。</p>
+      <div id="extensions-compatibility" class="extensions-compatibility" hidden>
+        <p>此环境使用内置 Electron Chromium，只支持部分 Chrome 扩展 API。Tampermonkey BETA 的用户脚本可能无法在网页中运行；它的 Dashboard 会调用 <code>chrome.tabs.create</code>，该 API 未受内置引擎承诺支持，因此这类操作可能无响应。其他依赖未支持扩展 API 的按钮也可能受影响。</p>
+        <details>
+          <summary>在外部 Chromium 中使用</summary>
+          <ol>
+            <li>回到配置中心，在浏览器引擎设置中安装或选择外部 Chromium，保存后重启环境。</li>
+            <li>在外部 Chromium 打开 <code>chrome://extensions</code>。Chromium 138 及以上进入 Tampermonkey 详情并开启“允许用户脚本”（Allow User Scripts）；更早版本开启扩展程序页顶部的“开发者模式”。</li>
+            <li>在 Tampermonkey 管理面板中使用其导出和导入功能迁移脚本。两个浏览器环境的数据独立，应用不会自动复制。</li>
+          </ol>
+        </details>
+      </div>
       <div id="extensions-list" class="extensions-list"></div>
       <p id="extensions-status" class="extensions-status" role="alert" aria-live="assertive" hidden></p>
-      <p id="extensions-empty" class="extensions-empty" hidden>还没有安装插件</p>
+      <p id="extensions-empty" class="extensions-empty" hidden>当前环境没有已启用的插件</p>
       <div class="extensions-panel-footer"><button id="open-extension-manager" type="button"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-settings"></use></svg>管理扩展程序</button></div>
     </aside>
     <aside id="downloads-panel" class="downloads-panel" hidden aria-label="下载管理">
-      <div class="downloads-panel-heading"><strong>下载</strong><button id="downloads-clear" class="panel-link" type="button" title="清除已完成下载">清除已完成</button></div>
+      <div class="downloads-panel-heading"><strong>下载</strong><div class="downloads-panel-tools"><button id="downloads-clear" class="panel-link" type="button" title="清除已完成下载">清除已完成</button><button id="downloads-close" class="icon-button" type="button" title="关闭下载" aria-label="关闭下载"><svg class="shell-icon"><use href="#shell-icon-close"></use></svg></button></div></div>
       <div id="downloads-list" class="downloads-list"></div>
       <p id="downloads-empty" class="extensions-empty">暂无下载</p>
     </aside>
@@ -199,6 +216,13 @@
     <div id="bookmark-menu" class="bookmark-menu" role="menu" aria-label="收藏栏菜单" hidden></div>
     <main class="browser-stage">
       <div class="page-viewport">
+        <form id="page-find" class="page-find" hidden role="search" aria-label="在页面中查找">
+          <input id="page-find-input" type="search" maxlength="2048" autocomplete="off" spellcheck="false" aria-label="查找内容" placeholder="在页面中查找" />
+          <output id="page-find-count" aria-live="polite">0/0</output>
+          <button id="page-find-previous" class="icon-button" type="button" title="上一个匹配" aria-label="上一个匹配"><svg class="shell-icon"><use href="#shell-icon-arrow-up"></use></svg></button>
+          <button id="page-find-next" class="icon-button" type="submit" title="下一个匹配" aria-label="下一个匹配"><svg class="shell-icon"><use href="#shell-icon-arrow-down"></use></svg></button>
+          <button id="page-find-close" class="icon-button" type="button" title="关闭查找" aria-label="关闭查找"><svg class="shell-icon"><use href="#shell-icon-close"></use></svg></button>
+        </form>
         <div id="pages" class="pages"></div>
         <div id="password-vault-prompt" class="password-vault-prompt" hidden role="dialog" aria-label="保存登录信息"></div>
         <div id="loading" class="loading" hidden>
@@ -241,7 +265,6 @@
             </div>
             <div class="agent-settings-section">
               <div class="agent-settings-section-title">行为</div>
-              <label class="agent-settings-checkbox" for="agent-setting-jev-enabled"><span>启用 JEV 模型</span><input id="agent-setting-jev-enabled" type="checkbox" /></label>
               <details class="agent-settings-advanced">
                 <summary>高级参数</summary>
                  <label class="agent-settings-field">上下文预算（tokens）<input id="agent-setting-context" type="number" min="1" step="1000" inputmode="numeric" /></label>
@@ -271,7 +294,9 @@
             <span class="agent-input-status-label"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-mouse"></use></svg><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-keyboard"></use></svg>虚拟输入</span>
             <span>已绑定当前标签</span>
           </div>
+          <div id="agent-composer-attachments" class="agent-composer-attachments" hidden aria-label="待发送图片"></div>
           <textarea id="agent-composer" rows="2" placeholder="和网页助手聊聊，或告诉我你想完成什么…" aria-label="网页助手输入"></textarea>
+          <p id="agent-composer-attachment-status" class="agent-composer-attachment-status" role="status" hidden></p>
           <div class="agent-composer-controls">
             <div class="agent-model-picker-wrap">
               <button id="agent-model-summary" class="agent-model-summary" type="button" title="选择 Agent 模型" aria-label="选择 Agent 模型" aria-haspopup="listbox" aria-expanded="false" aria-controls="agent-model-picker" disabled>未配置模型</button>
@@ -291,7 +316,14 @@
               </div>
             </div>
             <div class="agent-composer-footer">
-              <button id="agent-context-usage" class="agent-context-usage" type="button" title="上下文使用量" aria-label="上下文使用量" aria-live="polite">0%</button>
+              <div class="agent-context-usage-wrap">
+                <button id="agent-context-usage" class="agent-context-usage" type="button" aria-label="上下文使用量" aria-describedby="agent-context-tooltip" aria-live="polite">0%</button>
+                <div id="agent-context-tooltip" class="agent-context-tooltip" role="tooltip" aria-hidden="true">
+                  <strong class="agent-context-tooltip-title">背景信息窗口：</strong>
+                  <span id="agent-context-tooltip-percent" class="agent-context-tooltip-percent">0% 已用（剩余 100%）</span>
+                  <span id="agent-context-tooltip-tokens" class="agent-context-tooltip-tokens">已用 0 标记，预算未设置</span>
+                </div>
+              </div>
               <button id="agent-send" class="agent-send" type="submit" title="发送" aria-label="发送"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-send"></use></svg></button>
             </div>
           </div>
@@ -316,8 +348,9 @@
     <script src="browser-agent-actions.js"></script>
     <script src="agent-context-usage.js"></script>
     <script src="agent-retry.js"></script>
-    <script src="agent-completion.js"></script>
     <script src="interface-zoom.js"></script>
+    <script src="../main/browser-shortcuts.js"></script>
+    <script src="new-tab-site-favicon-cache.js"></script>
     <script src="browser-shell.js"></script>
   </body>
 </html>

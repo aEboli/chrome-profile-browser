@@ -17,6 +17,7 @@ test('formats actual context usage with one decimal place', () => {
   assert.equal(formatTokenCount(257600, 1), '257.6 k');
   assert.equal(formatTokenCount(648000, 1), '648.0 k');
   assert.equal(formatTokenCount(999500, 1), '999.5 k');
+  assert.equal(formatTokenCount(1000000, 1), '1.0 m');
   assert.equal(formatTokenCount(1590000, 1), '1.6 m');
 });
 

@@ -31,7 +31,7 @@
 
 ## 版本号规则
 
-当前版本为 `0.1.134`。产品版本使用 `大版本.小版本.更新号`：大版本示例为 `1.0.000`，小版本示例为 `0.1.000`，小功能更新号每次增加 `0.010`（例如 `0.0.100` → `0.0.110`、`0.0.230` → `0.0.240`），普通更新号每次增加 `0.001`。每次只递增一个层级；递增大版本或小版本时，所有下级归零，例如 `0.6.116` → `0.7.000`。
+当前版本为 `0.1.144`。产品版本使用 `大版本.小版本.更新号`：大版本示例为 `1.0.000`，小版本示例为 `0.1.000`，小功能更新号每次增加 `0.010`（例如 `0.0.100` → `0.0.110`、`0.0.230` → `0.0.240`），普通更新号每次增加 `0.001`。每次只递增一个层级；递增大版本或小版本时，所有下级归零，例如 `0.6.116` → `0.7.000`。
 
 版本更新使用以下命令，命令会同步 `package.json`、`package-lock.json`、README 和应用界面版本。npm 的标准 `version` 字段保留无前导零的兼容值，产品展示值保存在 `appVersion` 中。
 
@@ -48,7 +48,10 @@ npm run version:check    # 检查版本字段是否一致
 ### Profile、标签页与数据
 
 - 多个持久化 profile；每个 profile 独立保存 Cookie、缓存、站点存储、代理、插件和浏览器设置。
-- Chrome 风格顶部多标签、启动网址、可配置搜索模板、站点图标和新标签页外观；新窗口会进入同一标签栏。
+- Chrome 风格顶部多标签、启动网址、可配置搜索模板、站点图标和新标签页外观；普通新标签请求进入标签栏，Ctrl/中键打开链接保留当前页面。
+- 标签右键可复制、固定、按网站静音和批量关闭；支持 `Ctrl+Shift+T` 恢复、数字定位、按序切换及地址栏 `Alt+Enter` 新标签打开。
+- `Ctrl+F` 打开连续查找条并显示匹配位置；`Ctrl+H` 查看当前环境持久化的最近 1000 个页面，支持搜索、删除和确认清空。
+- `Ctrl+J` 打开下载面板，可暂停、继续、取消及打开已完成文件；导航按钮同步前进/后退和加载/停止状态，下载反馈保持页面输入焦点。
 - Chrome/Edge/Chromium 书签来源发现，以及 Chromium JSON、HTML 书签文件的选择性导入；书签栏支持文件夹、拖放排序、快捷打开和去重。
 - 按环境隔离的密码本，支持站点分组、按需显示密码和受控的网页登录字段自动填充。
 - 本地 JSON 数据存储；可以从应用内打开数据目录查看实际路径。
@@ -56,8 +59,9 @@ npm run version:check    # 检查版本字段是否一致
 ### 节点、订阅与核心
 
 - 系统直连、HTTP/HTTPS/SOCKS5 节点，以及 VMess、VLESS、Trojan、Shadowsocks、AnyTLS。
-- 导入 HTTP(S) 订阅、base64 URI 列表和常见 Clash YAML；订阅刷新成功后替换该来源的节点，失败时保留上一份成功配置。
-- 识别订阅流量、到期和重置信息；节点表支持分组、搜索、地址/IP 列和批量 TCP/协议握手检查。
+- 导入 HTTP(S) 订阅、base64 URI 列表和常见 Clash YAML；订阅支持手动在线刷新，并在超过 24 小时后自动刷新一次；刷新成功后替换该来源的节点，失败时保留上一份成功配置。
+- 订阅名称优先读取服务端或地址中的可读名称，没有时从节点备注和域名生成；每个订阅带有稳定的 `①`、`②` 等账号标识，手工改名后刷新仍保持不变；删除订阅会清理其节点，并解除失效的环境引用。
+- 识别订阅流量、到期和重置信息；节点表支持分组、搜索、地址/IP 列和最多 10 个并发的批量 TCP/协议握手检查。
 - 核心节点按 profile 启动独立的本地 SOCKS5。Windows x64 发行包内置官方 Xray-core 与 sing-box，其他平台可以在设置中下载并校验官方核心或选择本地核心。
 - 应用会提醒代理核心和外部 Chromium 的官方更新，不会静默替换正在使用的进程。
 
@@ -73,9 +77,10 @@ npm run version:check    # 检查版本字段是否一致
 - 右侧对话栏可以观察当前页面、读取标签与表格、管理标签、导航网页，并执行 CSS 选择器或坐标驱动的点击、填写、选择、拖拽、滚轮、键盘和文本输入。
 - 通过系统选择器明确授权后，可以列出目录、读取文本文件，并将授权文件上传到当前页面的 `input[type=file]`；授权只在当前 profile 运行期间有效。
 - 支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Google Gemini；可获取模型列表、测试连通性，配置上下文预算、输出长度、温度、思考等级和步骤数。步骤为 `0` 时持续执行。
-- 上下文圆环保留百分比概览；鼠标悬停可查看实际用量与预算，例如 `648.0 k / 1 m`，实际用量统一保留一位小数。
-- JEV 可在 Agent 配置中独立开关。开启后网页任务会在每批动作后判断是否完成并给出置信度与理由；关闭后不会请求 JEV，也不会向 Agent 暴露 JEV 判断工具。
-- 模型、JEV 和可安全重试的页面操作支持指数退避重试；用户可以停止等待，结果不确定的点击、提交和上传会先重新观察。
+- 网页助手输入框支持粘贴图片并预览、移除；图片随当前 Agent 消息发送，单张 data URL 最多 10,000,000 个字符。
+- 上下文圆环保留百分比概览；鼠标悬停可查看实际用量与预算，例如 `648.0 k / 1.0 m`，实际用量统一保留一位小数，使用 `m` 单位的预算也保留一位小数。
+- 网页助手直接依据所选 Agent 模型处理工具结果并生成答复；模型明确因输出 token 上限截断纯文本时会以相同思考等级续写。
+- 模型请求和可安全重试的页面操作支持指数退避重试；用户可以停止等待，结果不确定的点击、提交和上传会先重新观察。
 - 通过 `window.browserAgent` 和 shell preload bridge 暴露受控观察、动作、标签与文件接口，不执行任意网页脚本。
 
 ### 授权测试身份
@@ -88,7 +93,7 @@ npm run version:check    # 检查版本字段是否一致
 - 默认运行模式使用 Electron 自带的 Chromium。该模式的默认 User-Agent 沿用 Electron 的构建，可能包含 `Electron/<version>`；本项目不会把它伪装成纯 Chrome，也不修改 Canvas、WebGL 或 TLS 指纹。
 - 设置中填写外部 Chromium 可执行文件后，环境会在独立窗口启动该程序；路径必须是绝对文件路径（macOS 可选择 `.app`，应用会解析其中的可执行文件）。Electron 与外部 Chromium 使用不同的数据目录，Cookie、缓存和登录状态不会自动迁移；切换引擎前必须停止所有运行中的环境。
 - 订阅解析器会识别 HTTP、HTTPS、SOCKS5（含 `socks5h` 输入）以及 VMess、VLESS、Trojan、Shadowsocks、AnyTLS。普通节点直接传给 Chromium；核心节点先由本机 Xray 或 sing-box 监听回环 SOCKS5，再传给 Chromium，AnyTLS 固定由 sing-box 承载。节点检查使用独立的 TCP/协议握手逻辑，检查结果不代表目标站点一定可用。
-- HTTP 代理凭据可由 Electron 的代理认证回调尝试提供；Chromium 对 SOCKS5 用户名/密码认证的兼容性有限。指定外部 Chromium 时，应用不会自动填充代理凭据，建议使用无认证的本地代理或在代理客户端侧完成认证。
+- HTTP/SOCKS5 代理凭据可由 Electron 的代理认证回调提供；外部 Chromium 使用本机临时 HTTP 转发器处理带认证的代理节点，认证信息不会写入浏览器启动参数。
 - Electron 模式的代理规则包含 Chromium 的 `<local>` 绕过项，因此本地主机名等匹配该规则的地址可能绕过所选节点。`直连`同样只表示使用系统默认网络路径，不等于绑定某个指定公网 IP；固定出口需要操作系统路由、VPN 或本地代理配合。
 - 选择外部 Chromium 时，应用负责启动独立用户数据目录、启动网址、已激活插件、`--proxy-server`、`--disable-quic` 和 `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` 参数；不会把它嵌入应用窗口。Electron 模式会对宿主及每个页面 guest 设置同等 WebRTC 策略，但最终行为仍取决于浏览器版本和代理是否支持 WebRTC UDP。
 - 桌面应用使用统一的单实例锁。开发、安装和带不同 `--user-data-dir` 的调试启动不会创建第二个应用主进程，重复启动会唤起已有配置中心；GPU、网络服务和 renderer 等 Chromium 子进程仍可能同时存在，这是浏览器正常的多进程结构。
@@ -102,7 +107,7 @@ npm run version:check    # 检查版本字段是否一致
 
 节点用户名和密码优先使用操作系统提供的 Electron `safeStorage` 加密后保存。若系统密钥环不可用，应用会为保证本地功能降级为明文保存；请保护操作系统账户、数据目录和 `state.json`，不要把该文件提交到公共仓库。
 
-Agent Token 与 JEV Key 不会返回到 renderer 公共状态；在独立 Agent 配置页或对话页 Agent 设置中输入新密钥时会先询问是否长期保留，确认后使用 `safeStorage` 保存，拒绝则不写入状态文件。Agent 思考等级提供 `Off`、`Minimal`、`Low`、`Medium`、`High`、`XHigh`、`Max` 七档，模型不支持所选等级时会自动退到相邻可用等级。主进程负责向所选 Agent 协议和 JEV provider 发起请求；应用不按固定时长或请求/响应字节数终止请求，模型列表、连通性检查、聊天和 JEV 请求都可取消。对话没有固定消息条数限制，上下文仍按配置预算裁剪并在接近预算时压缩。模型列表和连通性检查均由主进程完成，不持久化临时 Token。已有节点 IP 会异步查询公开 IP 的国家信息，私有地址和查询失败会保留未解析提示；节点服务器 IP 不代表代理出口 IP。
+Agent Token 不会返回到 renderer 公共状态；在独立 Agent 配置页或对话页 Agent 设置中输入新密钥时会先询问是否长期保留，确认后使用 `safeStorage` 保存，拒绝则不写入状态文件。Agent 思考等级提供 `Off`、`Minimal`、`Low`、`Medium`、`High`、`XHigh`、`Max` 七档，模型不支持所选等级时会自动退到相邻可用等级。主进程负责向所选 Agent 协议发起请求；应用不按固定时长或请求/响应字节数终止请求，模型列表、连通性检查和聊天都可取消。对话没有固定消息条数限制，上下文仍按配置预算裁剪并在接近预算时压缩。模型列表和连通性检查均由主进程完成，不持久化临时 Token。已有节点 IP 会异步查询公开 IP 的国家信息，私有地址和查询失败会保留未解析提示；节点服务器 IP 不代表代理出口 IP。
 
 请只在自有或获授权的站点上做隐私、兼容性和自动化测试。测试第三方 Chromium 内核时，先使用空白 profile、非管理员账户或虚拟机，不要导入主账号 Cookie、密码或钱包。
 
@@ -124,7 +129,7 @@ await window.browserAgent.uploadFiles({ selector: 'input[type=file]', fileIds: [
 window.browserAgent.capabilities(); // browser-agent.v1、动作列表和坐标空间
 ```
 
-支持的动作包括 `screenshot`、`mouse_move`、`click`、`mouse_down`、`mouse_up`、`scroll`、`drag`、`keypress`、`key_down`、`key_up`、`type` 和 `wait`；另外可通过 `tabs`、`openTab`、`switchTab`、`closeTab`、`navigate` 和 `tabControl` 管理当前 profile 的标签。`chooseFiles`、`chooseDirectory`、`listFiles`、`readFile` 和 `uploadFiles` 只处理用户通过系统选择器授权的本地文件。网页动作没有固定文本长度、数值范围、动作数量、按键数或拖拽点数上限；坐标仍需位于当前页面 viewport，类型、有限数值、非空批次和动作/按键白名单仍会校验。接入 JEV 时应复用这些接口，不要绕过动作白名单。授权文件的数量、目录遍历、文本读取和上传批次没有应用层上限。当前协议层会把 Responses 的 `function_call` 与工具结果转换成配对的 `function_call_output`，并在裁剪上下文时保留完整工具调用组。
+支持的动作包括 `screenshot`、`mouse_move`、`click`、`mouse_down`、`mouse_up`、`scroll`、`drag`、`keypress`、`key_down`、`key_up`、`type` 和 `wait`；另外可通过 `tabs`、`openTab`、`switchTab`、`closeTab`、`navigate` 和 `tabControl` 管理当前 profile 的标签。`chooseFiles`、`chooseDirectory`、`listFiles`、`readFile` 和 `uploadFiles` 只处理用户通过系统选择器授权的本地文件。网页动作没有固定文本长度、数值范围、动作数量、按键数或拖拽点数上限；坐标仍需位于当前页面 viewport，类型、有限数值、非空批次和动作/按键白名单仍会校验。新增模型判断能力时应复用这些接口，不要绕过动作白名单。授权文件的数量、目录遍历、文本读取和上传批次没有应用层上限。当前协议层会把 Responses 的 `function_call` 与工具结果转换成配对的 `function_call_output`，并在裁剪上下文时保留完整工具调用组。
 
 `scroll.deltaY` 约定正数向下、负数向上，执行器会转换 Electron/Chromium 的底层滚轮符号。
 

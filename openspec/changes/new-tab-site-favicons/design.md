@@ -1,5 +1,8 @@
 # 设计
 
-- 复用现有 profile-scoped `browser-shell:get-page-favicon` IPC，由主进程使用当前环境会话请求网站根路径 favicon。
-- renderer 以入口 URL 为缓存键，合并并发请求，只缓存有效的 data image；图片加载事件控制真实图标与文字回退的显示。
+- 复用现有 profile-scoped `browser-shell:get-page-favicon` IPC，由主进程使用当前环境会话读取页面 `<link rel="icon">`、Web App Manifest 图标并回退到网站根路径 `/favicon.ico`。
+- renderer 以 profile ID 和入口 URL 为缓存键，将有效的 data image 持久保存在应用存储中；新标签页先使用已缓存图标，不因应用重启再次请求。
+- 手动设置和自动推荐入口都加载成功后，按两者合并后的可见入口列表清理缓存；入口列表加载失败或尚未完成时不清理，避免误删。
+- 图片加载事件控制真实图标与文字回退的显示；缓存图片无法解码时删除该条并通过当前 profile session 重试一次。
 - DOM 节点断开后不写入图标，网络失败被视为可恢复的显示回退，不阻断新标签页交互。
+- 存储不可用、数据损坏或超过容量时退回内存缓存，图标失败不阻断新标签页交互。

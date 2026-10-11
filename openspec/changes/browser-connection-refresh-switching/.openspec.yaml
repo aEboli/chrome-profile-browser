@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-10-10
+goal: 为浏览器右上角连接信息增加按模式重新检测与订阅线路热切换

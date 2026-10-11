@@ -314,6 +314,10 @@ function parseTrojan(uri, source) {
   if (transportResult.error) return unsupported('trojan', source, host(url.hostname), port(url.port), transportResult.error);
   const password = decode(url.username || '');
   if (!password) return invalid('trojan', source, 'Trojan 缺少密码');
+  if (!url.searchParams.has('security') && !url.searchParams.has('tls')) {
+    security.security = 'tls';
+    security.tls = true;
+  }
   const coreConfig = { type: 'trojan', password, ...transportResult.transport, ...security };
   if (!coreConfig.tls) return unsupported('trojan', source, host(url.hostname), port(url.port), 'Trojan 节点必须启用 TLS');
   return buildNode({ protocol: 'trojan', name: decode(url.hash.slice(1)), server: url.hostname, serverPort: url.port, coreConfig, source });

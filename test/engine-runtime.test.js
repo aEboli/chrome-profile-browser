@@ -9,6 +9,9 @@ const { test } = require('node:test');
 
 const {
   buildExternalEngineArgs,
+  discoverChromeExecutable,
+  normalizeEngineMode,
+  resolveExternalEnginePath,
   sameEnginePath,
   validateEnginePath,
   waitForProcessSpawn,
@@ -18,6 +21,14 @@ function tempDirectory() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'cpb-engine-'));
 }
 
+test('normalizes explicit engine mode and migrates legacy paths', () => {
+  assert.equal(normalizeEngineMode('external', ''), 'external');
+  assert.equal(normalizeEngineMode('electron', 'C:\\Chrome\\chrome.exe'), 'electron');
+  assert.equal(normalizeEngineMode('', 'C:\\Chrome\\chrome.exe'), 'external');
+  assert.equal(normalizeEngineMode('', ''), 'electron');
+  assert.equal(normalizeEngineMode('unsupported', ''), 'electron');
+});
+
 test('validates an absolute Chromium executable and rejects directories', () => {
   const root = tempDirectory();
   const executable = path.join(root, 'chrome.exe');
@@ -26,6 +37,69 @@ test('validates an absolute Chromium executable and rejects directories', () => 
   assert.throws(() => validateEnginePath('chrome.exe'), /绝对路径/);
   assert.throws(() => validateEnginePath(root), /可执行文件/);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('discovers Windows Chrome in system-wide, 32-bit, then user locations', () => {
+  const pathImpl = path.win32;
+  const env = {
+    ProgramFiles: 'C:\\System Apps',
+    'ProgramFiles(x86)': 'C:\\32-bit Apps',
+    LOCALAPPDATA: 'C:\\Users\\Test\\AppData\\Local',
+  };
+  const candidates = Object.values(env).map((root) => pathImpl.join(root, 'Google', 'Chrome', 'Application', 'chrome.exe'));
+  const found = new Set([candidates[1], candidates[2]]);
+  const fsImpl = {
+    statSync(candidate) {
+      if (!found.has(candidate)) throw new Error('not found');
+      return { isFile: () => true, isDirectory: () => false };
+    },
+  };
+  assert.equal(discoverChromeExecutable({ platform: 'win32', pathImpl, fsImpl, env }), candidates[1]);
+});
+
+test('discovers macOS Chrome bundles and Linux Chrome from PATH', () => {
+  const macBundle = '/Applications/Google Chrome.app';
+  const macExecutable = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  const macFs = {
+    statSync(candidate) {
+      if (candidate === macBundle) return { isDirectory: () => true, isFile: () => false };
+      if (candidate === macExecutable) return { isFile: () => true, isDirectory: () => false };
+      throw new Error('not found');
+    },
+  };
+  assert.equal(discoverChromeExecutable({ platform: 'darwin', pathImpl: path.posix, fsImpl: macFs }), macExecutable);
+
+  const linuxFs = {
+    statSync(candidate) {
+      if (candidate === '/custom/bin/google-chrome') return { isFile: () => true, isDirectory: () => false };
+      throw new Error('not found');
+    },
+  };
+  assert.equal(discoverChromeExecutable({
+    platform: 'linux',
+    pathImpl: path.posix,
+    fsImpl: linuxFs,
+    env: { PATH: '/custom/bin:/usr/bin' },
+  }), '/custom/bin/google-chrome');
+});
+
+test('manual Chrome path takes priority and invalid manual paths do not fall back', () => {
+  const root = tempDirectory();
+  const executable = path.join(root, 'chrome.exe');
+  fs.writeFileSync(executable, 'test');
+  assert.equal(resolveExternalEnginePath(executable), executable);
+  assert.throws(() => resolveExternalEnginePath(path.join(root, 'missing.exe')), /不存在/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('returns an empty discovery result when Chrome is not installed', () => {
+  const fsImpl = { statSync: () => { throw new Error('not found'); } };
+  assert.equal(discoverChromeExecutable({
+    platform: 'win32',
+    pathImpl: path.win32,
+    fsImpl,
+    env: { ProgramFiles: 'C:\\Apps', 'ProgramFiles(x86)': 'C:\\Apps32', LOCALAPPDATA: 'C:\\Users\\Test' },
+  }), '');
 });
 
 test('resolves a macOS application bundle to its executable', () => {

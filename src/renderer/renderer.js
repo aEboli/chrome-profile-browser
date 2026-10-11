@@ -102,18 +102,25 @@ const appState = {
   passwordFilter: "",
   passwordProfileId: "",
   profileStatuses: Object.create(null),
+  profileAutoFailoverStates: Object.create(null),
   connectionPicker: { profileId: "", filter: "", groupId: "" },
   batchChecking: false,
+  subscriptionsRefreshing: false,
+  subscriptionImportBusy: false,
   profileChecks: Object.create(null),
   nodeChecks: Object.create(null),
   directCheck: false,
 };
 
+let engineModeDraft = null;
+let engineModeDraftDirty = false;
+let enginePathDraft = null;
+const profileEngineSwitches = new Set();
+
 const shownCoreUpdateNotices = new Set();
 let draggedSubscriptionId = "";
 let agentFormProfileId = "";
 let clearManagerAgentToken = false;
-let clearManagerJevToken = false;
 let agentModelFetchKey = "";
 let agentModelFetchPromise = null;
 let agentModelFetchGeneration = 0;
@@ -124,6 +131,10 @@ let activeConfirmDialog = null;
 let extensionStoreProxySelectionGeneration = 0;
 let extensionStoreProxySelectionPromise = null;
 let bookmarkImportSourceRequestId = 0;
+const SUBSCRIPTION_AUTO_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const SUBSCRIPTION_AUTO_REFRESH_BUSY_RETRY_MS = 60 * 1000;
+let subscriptionAutoRefreshTimer = null;
+const subscriptionRefreshAttemptAt = new Map();
 
 const viewTitles = {
   launchpad: ["启动器", "环境选择"],
@@ -244,6 +255,7 @@ function normalizeProfile(profile = {}) {
     id,
     name: String(valueOf(profile, ["name", "title"], id ? `环境 ${id.slice(0, 6)}` : "未命名环境")),
     homepage: String(valueOf(profile, ["homepage", "startUrl", "url"], "")),
+    engineMode: String(valueOf(profile, ["engineMode"], "electron")) === "external" ? "external" : "electron",
     nodeId: String(valueOf(profile, ["nodeId", "proxyId"], "")),
     notes: String(valueOf(profile, ["notes", "note", "description"], "")),
     testIdentityId: String(valueOf(profile, ["testIdentityId"], "")),
@@ -298,6 +310,8 @@ function normalizeSubscription(subscription = {}) {
     ...source,
     id: String(valueOf(source, ["id", "subscriptionId"], "")),
     name: String(valueOf(source, ["name", "title"], "在线订阅")),
+    accountTag: String(valueOf(source, ["accountTag", "account", "identifier"], "")),
+    nameSource: String(valueOf(source, ["nameSource"], "default")),
     source: String(valueOf(source, ["source"], "")),
     sortOrder: (typeof rawSortOrder === "number" || typeof rawSortOrder === "string")
       && String(rawSortOrder).trim() !== ""
@@ -376,8 +390,12 @@ function normalizeState(nextState = {}) {
       : { direct: null },
     core: source.core && typeof source.core === "object" ? source.core : {},
     engine: source.engine && typeof source.engine === "object"
-      ? { mode: String(valueOf(source.engine, ["mode"], "electron")), configured: Boolean(source.engine.configured) }
-      : { mode: "electron", configured: false },
+      ? {
+        mode: String(valueOf(source.engine, ["mode"], "electron")),
+        configured: Boolean(source.engine.configured),
+        autoDiscoveredPath: String(valueOf(source.engine, ["autoDiscoveredPath"], "")),
+      }
+      : { mode: "electron", configured: false, autoDiscoveredPath: "" },
     engineUpdate: source.engineUpdate && typeof source.engineUpdate === "object"
       ? {
         ...source.engineUpdate,
@@ -406,6 +424,7 @@ function mergeState(nextState) {
   appState.connection = normalized.connection;
   appState.core = normalized.core;
   appState.engine = normalized.engine;
+  if (!engineModeDraftDirty) engineModeDraft = normalized.engine.mode;
   appState.engineUpdate = normalized.engineUpdate;
   applyTheme(normalized.settings.theme);
   // 启动或停止完成后，以主进程推送的状态为准。
@@ -413,6 +432,13 @@ function mergeState(nextState) {
     const profile = appState.profiles.find((item) => item.id === id);
     if (!profile || ["running", "stopped", "error"].includes(String(profile.status).toLowerCase())) {
       delete appState.profileStatuses[id];
+    }
+  }
+  for (const [id, status] of Object.entries(appState.profileAutoFailoverStates)) {
+    const profile = appState.profiles.find((item) => item.id === id);
+    const node = profile?.nodeId ? appState.nodes.find((item) => item.id === profile.nodeId) : null;
+    if (!profile || status === "unavailable" && profile.connectionMode === "subscription" && isAvailableNode(node)) {
+      delete appState.profileAutoFailoverStates[id];
     }
   }
   for (const update of normalized.coreUpdates) {
@@ -622,11 +648,15 @@ function syncProfileConfigLock() {
   const profile = appState.profiles.find((item) => item.id === profileId);
   const status = String(appState.profileStatuses[profileId] || profile?.status || "stopped").toLowerCase();
   const locked = Boolean(profile && PROFILE_CONFIG_LOCKED_STATUSES.has(status));
-  for (const fieldId of ["profile-node", "profile-test-origins", "profile-notes"]) {
+  for (const fieldId of ["profile-node", "profile-test-origins", "profile-notes", "profile-engine-mode"]) {
     const field = $(`#${fieldId}`);
     const wrapper = field?.closest("[data-profile-lock-field]");
     if (!field || !wrapper) continue;
-    field.disabled = locked;
+    if (fieldId === "profile-engine-mode") {
+      field.querySelectorAll("button").forEach((button) => { button.disabled = locked; });
+    } else {
+      field.disabled = locked;
+    }
     wrapper.classList.toggle("is-locked", locked);
     const trigger = wrapper.querySelector('[data-action="profile-config-locked"]');
     if (trigger) trigger.hidden = !locked;
@@ -706,14 +736,32 @@ function applyRendererCheckResult(target, check, fallbackError) {
 }
 
 function profileConnectionHealth(profile) {
-  if (!profile?.nodeId) return appState.connection?.direct || { status: "unknown" };
-  return appState.nodes.find((node) => node.id === profile.nodeId) || { status: "unknown", lastCheckError: "节点已移除" };
+  if (!profile?.nodeId) return profile?.connectionMode === "subscription"
+    ? { status: "unknown" }
+    : appState.connection?.direct || { status: "unknown" };
+  return appState.nodes.find((node) => node.id === profile.nodeId) || {
+    status: profile?.connectionMode === "subscription" ? "error" : "unknown",
+    lastCheckError: "节点已移除",
+  };
+}
+
+function profileConnectionModeText(profile) {
+  const activeNode = profile?.nodeId ? appState.nodes.find((node) => node.id === profile.nodeId) : null;
+  if (profile?.connectionMode === "subscription") {
+    const subscription = appState.subscriptions.find((item) => item.id === profile.subscriptionId);
+    const name = subscription
+      ? subscriptionLabel(subscription, appState.subscriptions.indexOf(subscription))
+      : "订阅";
+    const routeLabel = activeNode?.name || (profile.nodeId ? "当前线路已移除" : "启动时自动择优");
+    return `订阅自动 · ${name} · ${routeLabel}`;
+  }
+  if (profile?.connectionMode === "node") return `指定节点 · ${activeNode?.name || "节点已移除"}`;
+  return "系统直连";
 }
 
 function profileIpDetails(profile) {
-  return profile?.nodeId
-    ? appState.nodes.find((node) => node.id === profile.nodeId) || {}
-    : appState.connection?.direct || {};
+  if (profile?.nodeId) return appState.nodes.find((node) => node.id === profile.nodeId) || {};
+  return profile?.connectionMode === "subscription" ? { country: "订阅自动" } : appState.connection?.direct || {};
 }
 
 function profileIpValue(details, keys, fallback) {
@@ -725,14 +773,19 @@ function renderProfileIpSummary(profile, view = "profiles") {
   const details = profileIpDetails(profile);
   const health = profileConnectionHealth(profile);
   const metadata = ipSummaryMetadata(details);
-  const ipAddress = profileIpValue(details, ["ipAddress", "ip", "resolvedIp"], "未解析");
+  const activeNode = profile?.nodeId ? appState.nodes.find((node) => node.id === profile.nodeId) : null;
+  const ipAddress = profile?.connectionMode === "subscription" && !activeNode
+    ? profile.nodeId ? "当前线路已移除" : "启动时自动择优"
+    : profileIpValue(details, ["ipAddress", "ip", "resolvedIp"], "未解析");
   const latency = connectionLatency(health);
   const latencyMarkup = view === "profiles" ? `<span class="profile-ip-latency" aria-live="polite">延迟：${escapeHtml(latency)}</span>` : "";
-  const summaryLabel = view === "profiles" ? `${metadata} ${ipAddress} 延迟：${latency}` : `${metadata} ${ipAddress}`;
+  const modeLabel = profileConnectionModeText(profile);
+  const modeMarkup = `<span class="profile-connection-mode profile-connection-mode--${profile?.connectionMode === "subscription" ? "subscription" : profile?.connectionMode === "node" ? "node" : "direct"}">${escapeHtml(modeLabel)}</span>`;
+  const summaryLabel = `${modeLabel}；${metadata} ${ipAddress}${view === "profiles" ? ` 延迟：${latency}` : ""}`;
   const isOpen = appState.connectionPicker.profileId === profile.id;
   const pickerId = `connection-options-${view}-${profile.id}`;
   return `<div class="profile-ip-picker profile-connection-picker${isOpen ? " is-open" : ""}" data-connection-picker data-profile-id="${escapeHtml(profile.id)}">
-    <button class="profile-ip-summary" type="button" aria-haspopup="listbox" aria-expanded="${isOpen}" aria-controls="${escapeHtml(pickerId)}" aria-label="${escapeHtml(summaryLabel)}" title="点击选择连接" data-connection-trigger>${renderIpSummary(details, ipAddress, "profile-ip-metadata", "profile-ip-address")}${latencyMarkup}</button>
+    <button class="profile-ip-summary" type="button" aria-haspopup="listbox" aria-expanded="${isOpen}" aria-controls="${escapeHtml(pickerId)}" aria-label="${escapeHtml(summaryLabel)}" title="点击选择连接" data-connection-trigger>${modeMarkup}${renderIpSummary(details, ipAddress, "profile-ip-metadata", "profile-ip-address")}${latencyMarkup}</button>
     <div class="connection-picker-popover" id="${escapeHtml(pickerId)}" popover="manual" role="dialog" aria-label="选择 ${escapeHtml(profile.name)} 的连接"${isOpen ? "" : " hidden"}>${isOpen ? `<label class="connection-picker-search"><span class="sr-only">搜索连接</span>${icon("search")}<input type="search" value="${escapeHtml(appState.connectionPicker.filter)}" placeholder="搜索节点、地址或订阅" autocomplete="off" data-connection-search /></label><div class="connection-picker-options">${renderConnectionPickerOptions(profile)}</div>` : ""}</div>
   </div>`;
 }
@@ -819,6 +872,11 @@ function renderSubscriptions() {
     const progress = Math.min(100, Math.max(0, Number(fill.dataset.progress) || 0));
     fill.style.width = `${progress}%`;
   });
+  $$('[data-action="refresh-all-subscriptions"], [data-action="refresh-subscription"]').forEach((button) => {
+    const busy = appState.subscriptionsRefreshing || appState.batchChecking;
+    button.disabled = busy;
+    button.setAttribute("aria-busy", busy ? "true" : "false");
+  });
   const summary = $("#subscription-summary");
   if (summary) summary.textContent = filter ? `${subscriptions.length} / ${allSubscriptions.length} 个订阅` : `${allSubscriptions.length} 个订阅`;
   const title = empty.querySelector("strong");
@@ -833,7 +891,7 @@ function beginSubscriptionRename(target) {
   const item = appState.subscriptions.find((candidate) => candidate.id === subscriptionId);
   if (!target || !item || target.matches("input")) return;
   const index = appState.subscriptions.indexOf(item);
-  const originalName = subscriptionLabel(item, index);
+  const originalName = subscriptionBaseLabel(item, index);
   const input = document.createElement("input");
   input.className = "subscription-name-input";
   input.type = "text";
@@ -1073,11 +1131,14 @@ function renderAgentManagement() {
   const settings = appState.settings || {};
   const configured = String(valueOf(settings, ["agentModel", "agentApi"], "")).trim();
   const protocol = String(valueOf(settings, ["agentProtocol"], "openai-chat-completions"));
-  const jevModel = String(valueOf(settings, ["jevModel"], "jev-latest"));
-  const jevProvider = String(valueOf(settings, ["jevProvider"], "typesafe"));
+  const jevProvider = "";
+  const jevModel = "";
   container.innerHTML = `<div class="agent-management-summary">
     <div class="plugin-primary"><span class="plugin-icon agent-plugin-icon" aria-hidden="true">${icon("puzzle")}</span><span class="plugin-copy"><span class="plugin-name">网页助手 Agent</span><span class="plugin-meta">${escapeHtml(configured ? `${protocol} · ${configured}` : "尚未配置 Agent 模型")} · JEV ${escapeHtml(jevProvider)} / ${escapeHtml(jevModel)}</span><span class="plugin-statuses"><span class="status-badge ${settings.agentTokenSet ? "status-badge--ready" : "status-badge--warn"}><span class="status-dot ${settings.agentTokenSet ? "status-dot--good" : "status-dot--warn"}></span>${settings.agentTokenSet ? "Agent Key 已保存" : "等待 Agent Key"}</span><span class="status-badge"><span class="status-dot ${settings.jevKeySet ? "status-dot--good" : "status-dot--warn"}></span>${settings.jevKeySet ? "JEV Key 已保存" : "等待 JEV Key"}</span></span></span></div>
   </div>`;
+  const meta = container.querySelector(".plugin-meta");
+  if (meta) meta.textContent = configured ? `${protocol} · ${configured}` : "尚未配置 Agent 模型";
+  container.querySelector(".plugin-statuses .status-badge:nth-child(2)")?.remove();
 }
 
 function renderAgentEnvironmentManagement() {
@@ -1138,13 +1199,6 @@ function agentFormElements() {
     reasoning: $("#manager-agent-reasoning"),
     temperature: $("#manager-agent-temperature"),
     steps: $("#manager-agent-steps"),
-    jevProvider: $("#manager-jev-provider"),
-    jevAutoJudgeEnabled: $("#manager-jev-enabled"),
-    jevBaseUrl: $("#manager-jev-base-url"),
-    jevModel: $("#manager-jev-model"),
-    jevToken: $("#manager-jev-token"),
-    jevTokenStatus: $("#manager-jev-token-status"),
-    jevTokenClear: $("#manager-jev-token-clear"),
     connectionTest: $("#test-agent-connection"),
     connectionStatus: $("#agent-connection-status"),
   };
@@ -1193,24 +1247,7 @@ function fillAgentForm(settings = {}, profileId = "") {
   }
   if (elements.temperature) elements.temperature.value = settings.agentTemperature === null ? "" : String(valueOf(settings, ["agentTemperature"], 0.2));
   if (elements.steps) elements.steps.value = String(valueOf(settings, ["agentMaxSteps"], 0));
-  const providers = asArray(settings.jevProviders).length ? settings.jevProviders : [{ id: "typesafe", label: "TypeSafe 官方", defaultBaseUrl: "https://api.typesafe.ai" }, { id: "custom", label: "自定义 JEV 接口", defaultBaseUrl: "" }];
-  if (elements.jevProvider) {
-    elements.jevProvider.replaceChildren(...providers.map((provider) => {
-      const node = document.createElement("option");
-      node.value = provider.id;
-      node.textContent = provider.label;
-      node.selected = provider.id === String(valueOf(settings, ["jevProvider"], "typesafe"));
-      return node;
-    }));
-  }
-  if (elements.jevAutoJudgeEnabled) elements.jevAutoJudgeEnabled.checked = settings.jevAutoJudgeEnabled !== false;
-  if (elements.jevBaseUrl) elements.jevBaseUrl.value = String(valueOf(settings, ["jevBaseUrl"], "https://api.typesafe.ai"));
-  if (elements.jevModel) elements.jevModel.value = String(valueOf(settings, ["jevModel"], "jev-latest"));
-  if (elements.jevToken) elements.jevToken.value = "";
-  if (elements.jevTokenStatus) elements.jevTokenStatus.textContent = settings.jevKeySet ? "已保存 Key" : "未保存 Key";
-  if (elements.jevTokenClear) elements.jevTokenClear.hidden = !settings.jevKeySet;
   clearManagerAgentToken = false;
-  clearManagerJevToken = false;
   if (elements.connectionStatus) elements.connectionStatus.textContent = "";
 }
 
@@ -1369,20 +1406,11 @@ async function saveAgentConfig(event) {
     agentReasoningEffort: elements.reasoning?.value || "medium",
     agentTemperature: elements.temperature?.value === "" ? null : elements.temperature?.value,
     agentMaxSteps: elements.steps?.value || "0",
-    jevAutoJudgeEnabled: elements.jevAutoJudgeEnabled?.checked === true,
-    jevProvider: elements.jevProvider?.value || "typesafe",
-    jevBaseUrl: elements.jevBaseUrl?.value.trim() || "",
-    jevModel: elements.jevModel?.value.trim() || "jev-latest",
   };
   const agentToken = elements.token?.value.trim() || "";
-  const jevToken = elements.jevToken?.value.trim() || "";
   if (agentToken || clearManagerAgentToken) {
     payload.agentToken = agentToken;
     payload.clearAgentToken = clearManagerAgentToken;
-  }
-  if (jevToken || clearManagerJevToken) {
-    payload.jevToken = jevToken;
-    payload.clearJevToken = clearManagerJevToken;
   }
   try {
     setSyncState("保存中", "busy");
@@ -1393,8 +1421,7 @@ async function saveAgentConfig(event) {
     await openAgentConfig(agentFormProfileId);
     const notices = [];
     if (result?.agentKeyStatus === "not-retained") notices.push("Agent Key 未保留");
-    if (result?.jevKeyStatus === "not-retained") notices.push("JEV Key 未保留");
-    showToast(notices.length ? `配置已保存；${notices.join("，")}` : "Agent 与 JEV 配置已保存", notices.length ? "warn" : "success");
+    showToast(notices.length ? `配置已保存；${notices.join("，")}` : "Agent 配置已保存", notices.length ? "warn" : "success");
   } catch (error) {
     setSyncState("连接失败", "error");
     showToast(error.message || "保存 Agent 配置失败", "error");
@@ -1435,7 +1462,7 @@ function renderOverview() {
     const status = profileStatus(profile);
     return `<button class="profile-list-item" type="button" data-action="launch-profile" data-id="${escapeHtml(profile.id)}">
       <span class="profile-avatar" aria-hidden="true">${escapeHtml(initials(profile.name))}</span>
-      <span class="profile-list-main"><span class="profile-list-name">${escapeHtml(profile.name)}</span><span class="profile-list-meta">${escapeHtml(nodeLabel(profile.nodeId))} · ${escapeHtml(profileTrafficLabel(profile))}</span></span>
+      <span class="profile-list-main"><span class="profile-list-name">${escapeHtml(profile.name)}</span><span class="profile-list-meta">${escapeHtml(profileConnectionModeText(profile))} · ${escapeHtml(profileTrafficLabel(profile))}</span></span>
       <span class="profile-list-status"><span class="status-dot ${status.dot}"></span>${escapeHtml(status.label)}</span>
     </button>`;
   }).join("");
@@ -1463,6 +1490,18 @@ function renderLaunchpad() {
   const profileCards = profiles.map((profile, index) => {
     const status = profileStatus(profile);
     const subtitle = profile.homepage || "系统默认网页";
+    const engineMode = profile.engineMode === "external" ? "external" : "electron";
+    const engineLabel = engineMode === "external" ? "外部 Chromium" : "内置 Chromium";
+    const targetEngineMode = engineMode === "external" ? "electron" : "external";
+    const targetEngineLabel = targetEngineMode === "external" ? "外部 Chromium" : "内置 Chromium";
+    const rawStatus = String(appState.profileStatuses[profile.id] || profile.status || "stopped").toLowerCase();
+    const engineSwitchLocked = PROFILE_CONFIG_LOCKED_STATUSES.has(rawStatus) || rawStatus === "checking";
+    const engineSwitchPending = profileEngineSwitches.has(profile.id);
+    const engineSwitchTitle = engineSwitchLocked
+      ? "请先停止环境，再切换浏览器内核"
+      : engineSwitchPending
+        ? "正在保存浏览器内核"
+        : `点击切换到${targetEngineLabel}`;
     return `<article class="launch-card launch-card--profile">
       <button class="launch-card-open" type="button" data-action="launch-profile" data-id="${escapeHtml(profile.id)}">
         <span class="launch-card-menu" aria-hidden="true">${icon("arrow-right")}</span>
@@ -1472,7 +1511,7 @@ function renderLaunchpad() {
         <span class="launch-card-traffic">${renderProfileTrafficLines(profile, true)}</span>
       </button>
       <div class="launch-card-connection">${renderProfileConnectionPicker(profile, "launchpad")}</div>
-      <span class="launch-card-status"><span class="status-dot ${status.dot}"></span>${escapeHtml(status.running ? "正在运行" : "就绪")}</span>
+      <span class="launch-card-status"><span class="status-dot ${status.dot}"></span>${escapeHtml(status.running ? "正在运行" : "就绪")}<button class="launch-card-engine launch-card-engine--${engineMode}" type="button" data-action="toggle-profile-engine" data-id="${escapeHtml(profile.id)}" title="${escapeHtml(engineSwitchTitle)}" aria-label="当前为${engineLabel}，${engineSwitchTitle}"${engineSwitchLocked || engineSwitchPending ? " disabled" : ""}>${icon("refresh")}<span>${engineLabel}</span></button></span>
     </article>`;
   }).join("");
   grid.innerHTML = `${profileCards}
@@ -1561,7 +1600,9 @@ function connectionPickerNodeLabel(node) {
 
 function renderConnectionPickerOption(profile, node) {
   const nodeId = node?.id || "";
-  const selected = (profile.nodeId || "") === nodeId;
+  const selected = profile.connectionMode === "node"
+    ? (profile.nodeId || "") === nodeId
+    : profile.connectionMode !== "subscription" && !node;
   const groupLabel = node ? nodeGroupLabel(nodeGroupId(node)) : "系统直连";
   const label = connectionPickerNodeLabel(node);
   const title = node ? `${node.name} · ${connectionProtocolLabel(node)} · ${nodeAddress(node)}` : "系统默认网络路径";
@@ -1578,6 +1619,16 @@ function renderConnectionPickerOption(profile, node) {
   return `<div class="connection-picker-option-row" role="presentation"><button class="connection-picker-option${selected ? " is-selected" : ""}" type="button" role="option" aria-selected="${selected}" aria-label="${escapeHtml(label)}" title="${escapeHtml(title)}" data-connection-option data-node-id="${escapeHtml(nodeId)}" data-search-text="${escapeHtml(`${connectionPickerSearchText(node, groupLabel)} ${label}`.toLocaleLowerCase())}">${optionCopy}</button>${renderConnectionHealth(details, "connection-option-health")}<button class="row-action connection-picker-test" type="button" data-action="${testAction}" data-id="${escapeHtml(testId)}" title="${testLabel}" aria-label="${testLabel}"${checking ? " disabled" : ""}>${icon("zap")}</button></div>`;
 }
 
+function renderConnectionPickerSubscriptionOption(profile, subscription, index) {
+  const selected = profile.connectionMode === "subscription" && profile.subscriptionId === subscription.id;
+  const activeNode = selected && profile.nodeId ? appState.nodes.find((node) => node.id === profile.nodeId) : null;
+  const name = subscriptionLabel(subscription, index);
+  const detail = activeNode
+    ? `当前线路：${activeNode.name}${Number.isFinite(Number(activeNode.latencyMs)) ? ` · ${Math.round(Number(activeNode.latencyMs))} ms` : ""}`
+    : "自动择优并在本订阅内切线 · 出口 IP 可能变化";
+  return `<div class="connection-picker-option-row connection-picker-subscription-row" role="presentation"><button class="connection-picker-option connection-picker-subscription-option${selected ? " is-selected" : ""}" type="button" role="option" aria-selected="${selected}" aria-label="订阅自动：${escapeHtml(name)}" data-connection-subscription-option data-subscription-id="${escapeHtml(subscription.id)}" data-search-text="${escapeHtml(`${name} 订阅自动 自动择优 故障切换 ${detail}`.toLocaleLowerCase())}"><span class="connection-picker-option-copy"><span class="connection-picker-option-name">${escapeHtml(name)} · 订阅自动</span><span class="connection-picker-option-meta">${escapeHtml(detail)}</span></span><span class="connection-picker-mode-badge">自动</span></button></div>`;
+}
+
 function connectionPickerGroups() {
   const selectableNodes = appState.nodes.filter(isSelectableConnectionNode);
   const groups = [{ id: "direct", label: "系统直连", nodes: [null] }];
@@ -1585,7 +1636,7 @@ function connectionPickerGroups() {
   for (const [index, subscription] of appState.subscriptions.entries()) {
     const groupId = `subscription:${subscription.id}`;
     const nodes = selectableNodes.filter((node) => nodeGroupId(node) === groupId);
-    if (nodes.length) groups.push({ id: groupId, label: subscriptionLabel(subscription, index), nodes });
+    groups.push({ id: groupId, label: subscriptionLabel(subscription, index), nodes, subscription, subscriptionIndex: index });
     knownGroupIds.add(groupId);
   }
   const manualNodes = selectableNodes.filter((node) => nodeGroupId(node) === "manual");
@@ -1615,10 +1666,16 @@ function renderConnectionPickerOptions(profile) {
   if (appState.connectionPicker.groupId !== currentGroup.id) appState.connectionPicker.groupId = currentGroup.id;
   const groupTabs = groups.map((group) => {
     const active = group.id === currentGroup.id;
-    return `<button class="connection-picker-group-switch${active ? " is-active" : ""}" type="button" role="tab" aria-selected="${active}" data-action="select-connection-group" data-id="${escapeHtml(group.id)}">${escapeHtml(group.label)}<span class="connection-picker-group-count">${group.nodes.length}</span></button>`;
+    const count = group.nodes.length + Number(Boolean(group.subscription));
+    return `<button class="connection-picker-group-switch${active ? " is-active" : ""}" type="button" role="tab" aria-selected="${active}" data-action="select-connection-group" data-id="${escapeHtml(group.id)}">${escapeHtml(group.label)}<span class="connection-picker-group-count">${count}</span></button>`;
   }).join("");
   const groupLabel = currentGroup.label;
-  const options = currentGroup.nodes.filter((node) => matches(node, groupLabel)).map((node) => renderConnectionPickerOption(profile, node)).join("");
+  const subscriptionOption = currentGroup.subscription
+    && (!filter || `${groupLabel} 订阅自动 自动择优 故障切换`.toLocaleLowerCase().includes(filter))
+    ? renderConnectionPickerSubscriptionOption(profile, currentGroup.subscription, currentGroup.subscriptionIndex)
+    : "";
+  const nodeOptions = currentGroup.nodes.filter((node) => matches(node, groupLabel)).map((node) => renderConnectionPickerOption(profile, node)).join("");
+  const options = `${subscriptionOption}${nodeOptions}`;
   return `<div class="connection-picker-groups" role="tablist" aria-label="选择连接分组">${groupTabs}</div><div class="connection-picker-group"><div class="connection-picker-group-label" role="presentation">${escapeHtml(groupLabel)}</div><div role="listbox" aria-label="${escapeHtml(groupLabel)}">${options || `<div class="connection-picker-empty">没有匹配的连接</div>`}</div></div>`;
 }
 
@@ -1627,12 +1684,18 @@ function renderProfileConnectionPicker(profile, view = "profiles") {
   const checking = Boolean(appState.profileChecks[profile.id]) || String(health?.status || "").toLowerCase() === "checking";
   const checkLabel = checking
     ? "正在测试当前连接"
+    : profile.connectionMode === "subscription"
+      ? "测试当前订阅线路"
     : profile.nodeId
       ? "测试当前节点"
       : "测试系统直连";
   const selectedNode = profile.nodeId ? appState.nodes.find((node) => node.id === profile.nodeId) : null;
-  const checkDisabled = checking || Boolean(profile.nodeId && !selectedNode);
-  return `${renderProfileIpSummary(profile, view)}<div class="profile-connection-health-row">${renderConnectionHealth(health)}<button class="row-action" type="button" data-action="check-profile-connection" data-id="${escapeHtml(profile.id)}" title="${checkLabel}" aria-label="${checkLabel}"${checkDisabled ? " disabled" : ""}>${icon("zap")}</button></div>`;
+  const checkDisabled = checking || Boolean(profile.connectionMode === "node" && profile.nodeId && !selectedNode);
+  const autoState = appState.profileAutoFailoverStates[profile.id];
+  const autoStatus = profile.connectionMode === "subscription" && autoState
+    ? `<span class="profile-auto-route-warning">${autoState === "switching" ? "当前线路故障，正在切换订阅备用线路" : "订阅暂无可用备用线路"}</span>`
+    : "";
+  return `${renderProfileIpSummary(profile, view)}${autoStatus}<div class="profile-connection-health-row">${renderConnectionHealth(health)}<button class="row-action" type="button" data-action="check-profile-connection" data-id="${escapeHtml(profile.id)}" title="${checkLabel}" aria-label="${checkLabel}"${checkDisabled ? " disabled" : ""}>${icon("zap")}</button></div>`;
 }
 
 function renderProfiles() {
@@ -1640,7 +1703,7 @@ function renderProfiles() {
   if (!table) return;
   const connectionSearchWasFocused = document.activeElement?.matches?.("[data-connection-search]");
   const filter = appState.profileFilter.trim().toLocaleLowerCase();
-  const profiles = appState.profiles.filter((profile) => !filter || `${profile.name} ${profile.homepage} ${nodeLabel(profile.nodeId)}`.toLocaleLowerCase().includes(filter));
+  const profiles = appState.profiles.filter((profile) => !filter || `${profile.name} ${profile.homepage} ${profileConnectionModeText(profile)}`.toLocaleLowerCase().includes(filter));
   if (appState.activeView === "profiles" && appState.connectionPicker.profileId && !profiles.some((profile) => profile.id === appState.connectionPicker.profileId)) {
     appState.connectionPicker = { profileId: "", filter: "", groupId: "" };
   }
@@ -1655,7 +1718,7 @@ function renderProfiles() {
         : "";
     return `<div class="table-row profile-grid" role="row">
       <div class="table-primary"><span class="profile-avatar" aria-hidden="true">${escapeHtml(initials(profile.name))}</span><span class="table-primary-copy"><span class="table-primary-name">${escapeHtml(profile.name)}</span><span class="table-secondary">${escapeHtml(profile.homepage || "未设置启动网址")}</span></span></div>
-      ${renderProfileIpSummary(profile)}
+      ${renderProfileConnectionPicker(profile)}
       <div class="table-cell"><span class="status-badge ${status.className}"><span class="status-dot ${status.dot}"></span>${escapeHtml(status.label)}</span>${runtimeLabel ? `<span class="runtime-mode-label">${escapeHtml(runtimeLabel)}</span>` : ""}</div>
       <div class="table-cell profile-traffic-cell" title="${escapeHtml(profileTrafficLabel(profile))}">${renderProfileTrafficLines(profile)}</div>
       <div class="table-cell">${escapeHtml(formatDate(profile.lastUsed))}</div>
@@ -1717,7 +1780,9 @@ function openConnectionPicker(profileId) {
   const profile = appState.profiles.find((candidate) => candidate.id === String(profileId || ""));
   const groups = connectionPickerGroups();
   const currentNode = profile?.nodeId ? appState.nodes.find((node) => node.id === profile.nodeId) : null;
-  const preferredGroupId = currentNode ? nodeGroupId(currentNode) : "direct";
+  const preferredGroupId = profile?.connectionMode === "subscription" && profile.subscriptionId
+    ? `subscription:${profile.subscriptionId}`
+    : currentNode ? nodeGroupId(currentNode) : "direct";
   const groupId = groups.some((group) => group.id === preferredGroupId) ? preferredGroupId : groups[0]?.id || "direct";
   appState.connectionPicker = { profileId: String(profileId || ""), filter: "", groupId };
   renderLaunchpad();
@@ -1767,6 +1832,13 @@ function nodeGroupId(node) {
 }
 
 function subscriptionLabel(subscription, index = 0) {
+  const name = String(subscription?.name || "").trim();
+  const base = name && name !== "在线订阅" ? name : `订阅${index + 1}`;
+  const accountTag = String(subscription?.accountTag || "").trim();
+  return accountTag ? `${base} ${accountTag}` : base;
+}
+
+function subscriptionBaseLabel(subscription, index = 0) {
   const name = String(subscription?.name || "").trim();
   return name && name !== "在线订阅" ? name : `订阅${index + 1}`;
 }
@@ -1828,7 +1900,7 @@ function renderNodes() {
   const checkableCount = nodes.filter(isNodeCheckable).length;
   const batchButton = $("#batch-check-nodes");
   if (batchButton) {
-    batchButton.disabled = appState.batchChecking || checkableCount === 0;
+    batchButton.disabled = appState.batchChecking || appState.subscriptionsRefreshing || checkableCount === 0;
     batchButton.setAttribute("aria-busy", appState.batchChecking ? "true" : "false");
     const label = batchButton.querySelector("span");
     if (label) label.textContent = appState.batchChecking ? "批量检查中" : "批量检查";
@@ -1912,12 +1984,11 @@ function renderThemePreview(theme) {
 
 function renderSettingsSummary() {
   const settings = appState.settings || {};
-  const enginePath = String(valueOf(settings, ["enginePath", "chromiumPath"], "")).trim();
-  const external = appState.engine.mode === "external" || Boolean(enginePath);
+  const external = appState.engine.mode === "external";
   const engine = $("#settings-summary-engine");
   const engineDetail = $("#settings-summary-engine-detail");
   if (engine) engine.textContent = external ? "外部 Chromium" : "内置 Chromium";
-  if (engineDetail) engineDetail.textContent = external ? "独立窗口运行" : "使用应用自带内核";
+  if (engineDetail) engineDetail.textContent = "新环境默认值；现有环境单独设置";
 
   const xray = appState.core?.xray;
   const singbox = appState.core?.singbox;
@@ -2143,19 +2214,49 @@ async function importBrowserBookmarks() {
   }
 }
 
-function renderSettings() {
+function renderEngineSettings() {
   const input = $("#engine-path");
-  if (input && document.activeElement !== input) input.value = String(valueOf(appState.settings, ["enginePath", "chromiumPath"], ""));
+  const savedPath = String(valueOf(appState.settings, ["enginePath", "chromiumPath"], "")).trim();
+  const savedMode = appState.engine.mode === "external" ? "external" : "electron";
+  if (engineModeDraft === null) engineModeDraft = savedMode;
+  if (input && document.activeElement !== input) input.value = enginePathDraft ?? savedPath;
+  const pathValue = String(enginePathDraft ?? input?.value ?? savedPath).trim();
+  const pending = engineModeDraft !== savedMode || (enginePathDraft !== null && pathValue !== savedPath);
+  const external = engineModeDraft === "external";
+  $$('[data-engine-mode]').forEach((button) => {
+    const selected = button.dataset.engineMode === engineModeDraft;
+    button.setAttribute("aria-pressed", String(selected));
+  });
   const engineStatus = $("#engine-mode-status");
   if (engineStatus) {
-    const external = appState.engine.mode === "external"
-      || Boolean(valueOf(appState.settings, ["enginePath", "chromiumPath"], ""));
-    engineStatus.textContent = external ? "当前模式：外部 Chromium（独立窗口）" : "当前模式：内置 Electron Chromium";
+    const modeName = external ? "外部 Chromium（独立窗口）" : "内置 Electron Chromium";
+    engineStatus.textContent = external && !pathValue && !appState.engine.autoDiscoveredPath
+      ? `新环境默认：${modeName}，请先选择可执行文件`
+      : `${pending ? "待保存默认值" : "新环境默认"}：${modeName}${pending ? "（保存后生效）" : ""}`;
     engineStatus.className = `engine-mode-status ${external ? "is-external" : "is-electron"}`;
+  }
+  const discoveryStatus = $("#engine-discovery-status");
+  if (discoveryStatus) {
+    const autoPath = String(appState.engine.autoDiscoveredPath || "").trim();
+    if (pathValue) {
+      discoveryStatus.hidden = true;
+      discoveryStatus.textContent = "";
+      discoveryStatus.className = "field-hint engine-discovery-status";
+    } else if (autoPath) {
+      discoveryStatus.hidden = false;
+      discoveryStatus.textContent = `自动发现 Google Chrome：${autoPath}；外部环境将使用此 Chrome。`;
+      discoveryStatus.className = "field-hint engine-discovery-status is-found";
+    } else {
+      discoveryStatus.hidden = false;
+      discoveryStatus.textContent = "未发现 Google Chrome；请安装 Chrome，或手动选择 Chromium 可执行文件。";
+      discoveryStatus.className = "field-hint engine-discovery-status is-missing";
+    }
   }
   const engineUpdateStatus = $("#engine-update-status");
   if (engineUpdateStatus) {
-    const version = String(appState.engine?.version || "").trim();
+    const version = appState.engine.configured
+      ? String(valueOf(appState.settings, ["engineVersion"], "")).trim()
+      : String(appState.engine?.version || "").trim();
     const updateLabel = appState.engineUpdate?.latestVersion
       ? `可更新至 v${appState.engineUpdate.latestVersion}`
       : version
@@ -2164,6 +2265,10 @@ function renderSettings() {
     engineUpdateStatus.textContent = updateLabel;
     engineUpdateStatus.hidden = !updateLabel;
   }
+}
+
+function renderSettings() {
+  renderEngineSettings();
   const xrayInput = $("#xray-path");
   if (xrayInput && document.activeElement !== xrayInput) xrayInput.value = String(valueOf(appState.settings, ["xrayPath"], ""));
   const singboxInput = $("#singbox-path");
@@ -2371,6 +2476,14 @@ function fillProfileForm(profile = null) {
   $("#profile-id").value = profile?.id || "";
   $("#profile-name").value = profile?.name || "";
   $("#profile-homepage").value = profile?.homepage || "";
+  const engineMode = profile?.engineMode === "external"
+    ? "external"
+    : profile?.engineMode === "electron"
+      ? "electron"
+      : appState.engine.mode === "external" ? "external" : "electron";
+  $$('[data-profile-engine-mode]').forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.profileEngineMode === engineMode));
+  });
   $("#profile-test-identity").value = profile?.testIdentityId || "保存后生成";
   $("#profile-test-origins").value = (profile?.testIdentityOrigins || []).join("\n");
   $("#profile-notes").value = profile?.notes || "";
@@ -2378,13 +2491,21 @@ function fillProfileForm(profile = null) {
   const supportedNodes = appState.nodes.filter(isSelectableNode);
   const currentNode = profile?.nodeId ? appState.nodes.find((node) => node.id === profile.nodeId) : null;
   const unavailableSelection = currentNode && !isSelectableNode(currentNode)
-    ? `<option value="${escapeHtml(currentNode.id)}" selected>当前节点不可用：${escapeHtml(currentNode.name)}</option>`
+    ? `<option value="node:${escapeHtml(currentNode.id)}" selected>当前节点不可用：${escapeHtml(currentNode.name)}</option>`
     : "";
-  select.innerHTML = `<option value="">系统直连</option>${unavailableSelection}${supportedNodes.map((node) => {
+  const nodeOptions = supportedNodes.map((node) => {
     const protocolLabel = node.protocol === "http" && node.tls ? "HTTPS" : node.protocol.toUpperCase();
-    return `<option value="${escapeHtml(node.id)}">${escapeHtml(node.name)} · ${escapeHtml(protocolLabel)}${node.requiresCore ? ` · ${node.core === "singbox" ? "sing-box" : "Xray"}` : ""}</option>`;
-  }).join("")}`;
-  select.value = profile?.nodeId || "";
+    return `<option value="node:${escapeHtml(node.id)}">${escapeHtml(node.name)} · ${escapeHtml(protocolLabel)}${node.requiresCore ? ` · ${node.core === "singbox" ? "sing-box" : "Xray"}` : ""}</option>`;
+  }).join("");
+  const subscriptionOptions = appState.subscriptions.map((subscription, index) => (
+    `<option value="subscription:${escapeHtml(subscription.id)}">${escapeHtml(subscriptionLabel(subscription, index))} · 自动择优/故障切换</option>`
+  )).join("");
+  select.innerHTML = `<option value="direct">系统直连</option><optgroup label="指定节点">${unavailableSelection}${nodeOptions || `<option value="" disabled>没有可用节点</option>`}</optgroup><optgroup label="订阅自动">${subscriptionOptions || `<option value="" disabled>还没有已导入的订阅</option>`}</optgroup>`;
+  select.value = profile?.connectionMode === "subscription"
+    ? `subscription:${profile.subscriptionId || ""}`
+    : profile?.connectionMode === "node" && profile.nodeId
+      ? `node:${profile.nodeId}`
+      : "direct";
   syncProfileConfigLock();
 }
 
@@ -3028,14 +3149,14 @@ async function installExtensionFromCrxSoso(extensionId) {
   }
 }
 
-function invokeApi(method, payload) {
+function invokeApi(method, payload, options = {}) {
   if (typeof api[method] !== "function") return Promise.reject(new Error(`window.api.${method} 不可用`));
   return Promise.resolve()
     .then(() => (payload === undefined ? api[method]() : api[method](payload)))
     .then((result) => {
       // 主进程处理器返回可序列化的 { ok, error } 结果封装。
       if (result && result.ok === false && !result.canceled) throw new Error(result.error || `${method} 操作失败`);
-      if (result && result.state) mergeState(result.state);
+      if (options.mergeState !== false && result && result.state) mergeState(result.state);
       return result;
     });
 }
@@ -3327,6 +3448,57 @@ async function autoCheckExtensionUpdates() {
   for (const extension of candidates) await checkExtensionUpdate(extension.id, true);
 }
 
+function subscriptionRefreshDueAt(subscription, now = Date.now()) {
+  const updatedAt = Date.parse(String(subscription?.lastUpdatedAt || ""));
+  const persistedAttemptAt = Date.parse(String(subscription?.lastRefreshAttemptAt || ""));
+  const attemptedAt = Number(subscriptionRefreshAttemptAt.get(subscription?.id)) || 0;
+  const latestActivity = Math.max(
+    Number.isFinite(updatedAt) ? updatedAt : 0,
+    Number.isFinite(persistedAttemptAt) ? persistedAttemptAt : 0,
+    attemptedAt,
+  );
+  return latestActivity > 0 ? latestActivity + SUBSCRIPTION_AUTO_REFRESH_INTERVAL_MS : now;
+}
+
+function scheduleSubscriptionAutoRefresh(delayOverride) {
+  if (typeof window === "undefined" || typeof window.setTimeout !== "function") return;
+  if (subscriptionAutoRefreshTimer !== null && typeof window.clearTimeout === "function") {
+    window.clearTimeout(subscriptionAutoRefreshTimer);
+    subscriptionAutoRefreshTimer = null;
+  }
+  const subscriptions = asArray(appState.subscriptions);
+  if (!subscriptions.length) return;
+  const now = Date.now();
+  const nextDueAt = subscriptions.reduce((earliest, subscription) => (
+    Math.min(earliest, subscriptionRefreshDueAt(subscription, now))
+  ), Number.POSITIVE_INFINITY);
+  const delay = Number.isFinite(delayOverride)
+    ? Math.max(0, delayOverride)
+    : Math.max(0, nextDueAt - now);
+  subscriptionAutoRefreshTimer = window.setTimeout(() => {
+    subscriptionAutoRefreshTimer = null;
+    void runDueSubscriptionAutoRefresh();
+  }, Math.min(delay, 2_147_000_000));
+}
+
+async function runDueSubscriptionAutoRefresh() {
+  if (appState.subscriptionsRefreshing || appState.batchChecking) {
+    scheduleSubscriptionAutoRefresh(SUBSCRIPTION_AUTO_REFRESH_BUSY_RETRY_MS);
+    return;
+  }
+  const now = Date.now();
+  const dueIds = asArray(appState.subscriptions)
+    .filter((subscription) => subscriptionRefreshDueAt(subscription, now) <= now)
+    .map((subscription) => subscription.id)
+    .filter(Boolean);
+  if (!dueIds.length) {
+    scheduleSubscriptionAutoRefresh();
+    return;
+  }
+  await refreshSubscriptions(dueIds, { automatic: true });
+  scheduleSubscriptionAutoRefresh();
+}
+
 async function refreshState(showFeedback = false) {
   setSyncState("同步中", "busy");
   try {
@@ -3335,9 +3507,13 @@ async function refreshState(showFeedback = false) {
     setSyncState("已连接");
     if (appState.activeView === "extensions") void autoCheckExtensionUpdates();
     if (showFeedback) showToast("数据已刷新", "success");
+    scheduleSubscriptionAutoRefresh();
+    return true;
   } catch (error) {
     setSyncState("连接失败", "error");
     showToast(error.message || "无法读取本地状态", "error");
+    scheduleSubscriptionAutoRefresh();
+    return false;
   }
 }
 
@@ -3346,22 +3522,36 @@ async function saveProfile(event) {
   const form = event.currentTarget;
   const data = new FormData(form);
   const name = String(data.get("name") || "").trim();
-  const nodeId = $("#profile-node").value;
+  const connectionSelection = $("#profile-node").value;
+  const existing = appState.profiles.find((item) => item.id === String(data.get("id") || $("#profile-id").value || ""));
   const testIdentityOrigins = $("#profile-test-origins").value;
   const notes = $("#profile-notes").value.trim();
   if (!name) return;
+  const subscriptionId = connectionSelection.startsWith("subscription:")
+    ? connectionSelection.slice("subscription:".length)
+    : "";
+  const selectedNodeId = connectionSelection.startsWith("node:")
+    ? connectionSelection.slice("node:".length)
+    : "";
+  const connectionMode = subscriptionId ? "subscription" : selectedNodeId ? "node" : "direct";
+  const engineMode = $("#profile-engine-mode")?.querySelector('[aria-pressed="true"]')?.dataset.profileEngineMode || "electron";
   const profile = {
     id: String(data.get("id") || $("#profile-id").value || ""),
     name,
     homepage: String(data.get("homepage") || "").trim(),
     startUrl: String(data.get("homepage") || "").trim() || "about:blank",
-    connectionMode: nodeId ? "node" : "direct",
-    nodeId: nodeId || null,
+    engineMode,
+    connectionMode,
+    nodeId: connectionMode === "node"
+      ? selectedNodeId
+      : connectionMode === "subscription" && existing?.connectionMode === "subscription" && existing.subscriptionId === subscriptionId
+        ? existing.nodeId || null
+        : null,
+    subscriptionId: subscriptionId || null,
     testIdentityOrigins,
     notes,
     note: notes,
   };
-  const existing = appState.profiles.find((item) => item.id === profile.id);
   if (existing) {
     profile.createdAt = existing.createdAt;
     profile.lastLaunchedAt = existing.lastLaunchedAt;
@@ -3370,6 +3560,7 @@ async function saveProfile(event) {
   try {
     setSyncState("保存中", "busy");
     await invokeApi("saveProfile", profile);
+    delete appState.profileAutoFailoverStates[profile.id];
     closeModal("profile-modal");
     await refreshState();
     showToast("环境已保存", "success");
@@ -3428,6 +3619,7 @@ async function toggleProfile(id) {
   if (["starting", "stopping", "switching", "saving"].includes(appState.profileStatuses[id])) return;
   const running = profileStatus(profile).running;
   const method = running ? "stopProfile" : "launchProfile";
+  if (!running) delete appState.profileAutoFailoverStates[id];
   appState.profileStatuses[id] = running ? "stopping" : "starting";
   renderAll();
   try {
@@ -3451,6 +3643,32 @@ async function toggleProfile(id) {
   }
 }
 
+async function toggleProfileEngine(profileId) {
+  const profile = appState.profiles.find((item) => item.id === profileId);
+  if (!profile || profileEngineSwitches.has(profileId)) return;
+  const status = String(appState.profileStatuses[profileId] || profile.status || "stopped").toLowerCase();
+  if (PROFILE_CONFIG_LOCKED_STATUSES.has(status) || status === "checking") {
+    showToast("请先停止环境，再切换浏览器内核", "warn");
+    return;
+  }
+
+  const engineMode = profile.engineMode === "external" ? "electron" : "external";
+  const engineLabel = engineMode === "external" ? "外部 Chromium" : "内置 Chromium";
+  profileEngineSwitches.add(profileId);
+  renderLaunchpad();
+  try {
+    await invokeApi("setProfileEngineMode", { profileId, engineMode });
+    appState.profiles = appState.profiles.map((item) => item.id === profileId ? { ...item, engineMode } : item);
+    renderAll();
+    showToast(`“${profile.name}”下次启动将使用${engineLabel}`, "success");
+  } catch (error) {
+    showToast(error.message || "切换浏览器内核失败", "error");
+  } finally {
+    profileEngineSwitches.delete(profileId);
+    renderLaunchpad();
+  }
+}
+
 async function launchProfileDirect(id) {
   const profile = appState.profiles.find((candidate) => candidate.id === id);
   if (!profile) return;
@@ -3469,7 +3687,10 @@ async function launchProfileDirect(id) {
 
 async function switchProfileNode(profileId, nodeId) {
   const profile = appState.profiles.find((candidate) => candidate.id === profileId);
-  if (!profile || profile.nodeId === nodeId || (!profile.nodeId && !nodeId)) return;
+  if (!profile
+    || (profile.connectionMode === "node" && profile.nodeId === nodeId)
+    || (profile.connectionMode !== "node" && profile.connectionMode !== "subscription" && !nodeId)) return;
+  delete appState.profileAutoFailoverStates[profileId];
   try {
     appState.profileStatuses[profileId] = profileStatus(profile).running ? "switching" : "saving";
     renderAll();
@@ -3484,6 +3705,27 @@ async function switchProfileNode(profileId, nodeId) {
   } catch (error) {
     await refreshState();
     showToast(error.message || "切换连接失败", "error");
+  }
+}
+
+async function switchProfileSubscription(profileId, subscriptionId) {
+  const profile = appState.profiles.find((candidate) => candidate.id === profileId);
+  if (!profile || !subscriptionId) return;
+  delete appState.profileAutoFailoverStates[profileId];
+  try {
+    appState.profileStatuses[profileId] = profileStatus(profile).running ? "switching" : "saving";
+    renderAll();
+    const result = await invokeApi("switchProfileSubscription", { profileId, subscriptionId });
+    const launchResult = result?.launchConfirmation
+      ? await resolveProfileLaunchConfirmation(profileId, result.launchConfirmation)
+      : null;
+    await refreshState();
+    showToast(launchResult?.cancelled
+      ? `“${profile.name}”订阅线路已选择，启动已取消`
+      : `“${profile.name}”已启用订阅自动线路`, launchResult?.cancelled ? "warn" : "success");
+  } catch (error) {
+    await refreshState();
+    showToast(error.message || "选择订阅线路失败", "error");
   }
 }
 
@@ -3505,8 +3747,22 @@ function fillSubscriptionForm(subscription = null) {
   $("#subscription-text").value = "";
   $("#subscription-text").disabled = editing;
   $("#subscription-text").setAttribute("aria-disabled", editing ? "true" : "false");
-  const submit = $("#import-form button[type=submit]");
-  if (submit) submit.textContent = editing ? "保存订阅" : "开始导入";
+  renderSubscriptionImportControls();
+}
+
+function renderSubscriptionImportControls() {
+  const form = $("#import-form");
+  const submit = form?.querySelector('button[type="submit"]');
+  const editing = Boolean(form?.dataset.subscriptionId);
+  if (submit) {
+    submit.disabled = appState.subscriptionImportBusy;
+    submit.textContent = appState.subscriptionImportBusy
+      ? editing ? "保存中..." : "导入中..."
+      : editing ? "保存订阅" : "开始导入";
+  }
+  $$('[data-action="import-subscription"]').forEach((button) => {
+    button.disabled = appState.subscriptionImportBusy;
+  });
 }
 
 async function editSubscription(id) {
@@ -3523,6 +3779,7 @@ async function editSubscription(id) {
 
 async function importSubscription(event) {
   event.preventDefault();
+  if (appState.subscriptionImportBusy) return;
   const form = event.currentTarget;
   const data = new FormData(form);
   const name = String(data.get("name") || "").trim();
@@ -3534,6 +3791,8 @@ async function importSubscription(event) {
     showToast("请填写订阅地址或粘贴订阅内容", "warn");
     return;
   }
+  appState.subscriptionImportBusy = true;
+  renderSubscriptionImportControls();
   try {
     setSyncState(subscriptionId ? "保存中" : "导入中", "busy");
     let result;
@@ -3581,6 +3840,9 @@ async function importSubscription(event) {
   } catch (error) {
     setSyncState("连接失败", "error");
     showToast(error.message || "订阅导入失败", "error");
+  } finally {
+    appState.subscriptionImportBusy = false;
+    renderSubscriptionImportControls();
   }
 }
 
@@ -3692,15 +3954,18 @@ async function checkProfileConnection(id) {
   if (!profile || appState.profileChecks[id]) return;
   const node = profile.nodeId ? appState.nodes.find((candidate) => candidate.id === profile.nodeId) : null;
   const hasNodeSelection = Boolean(profile.nodeId);
-  if (hasNodeSelection && !node) {
+  const subscriptionMode = profile.connectionMode === "subscription";
+  if (hasNodeSelection && !node && !subscriptionMode) {
     showToast("当前节点已移除，请重新选择连接", "error");
     return;
   }
-  const targetLabel = node ? `当前节点“${node.name}”` : "系统直连";
+  const targetLabel = subscriptionMode
+    ? profileConnectionModeText(profile)
+    : node ? `当前节点“${node.name}”` : "系统直连";
   appState.profileChecks[id] = true;
   if (node) {
     node.status = "checking";
-  } else {
+  } else if (!subscriptionMode) {
     appState.connection = appState.connection || {};
     appState.connection.direct = { ...(appState.connection.direct || {}), status: "checking", latencyMs: null, lastCheckError: "" };
   }
@@ -3710,12 +3975,12 @@ async function checkProfileConnection(id) {
     const check = result?.result || result || {};
     if (!result?.state && check && typeof check === "object") {
       if (node) applyRendererCheckResult(node, check, "节点不可达");
-      else applyRendererCheckResult(appState.connection.direct, check, "直连不可达");
+      else if (!subscriptionMode) applyRendererCheckResult(appState.connection.direct, check, "直连不可达");
     }
     const reachable = check.ok ?? check.reachable ?? check.available;
     showToast(`${targetLabel}检查完成：${reachable === true ? "可达" : "不可达"}`, reachable === true ? "success" : "warn");
   } catch (error) {
-    const target = node || appState.connection?.direct;
+    const target = node || (!subscriptionMode ? appState.connection?.direct : null);
     if (target) {
       target.status = "error";
       target.latencyMs = null;
@@ -3731,12 +3996,17 @@ async function checkProfileConnection(id) {
 }
 
 async function checkVisibleNodes() {
-  if (appState.batchChecking) return;
+  if (appState.batchChecking || appState.subscriptionsRefreshing) return;
   const nodes = filteredNodes().filter(isNodeCheckable);
   if (!nodes.length) {
     showToast("当前筛选结果没有可检查的节点", "warn");
     return;
   }
+  await checkNodes(nodes);
+}
+
+async function checkNodes(nodes) {
+  if (appState.batchChecking || !nodes.length) return;
   appState.batchChecking = true;
   for (const node of nodes) node.status = "checking";
   renderAll();
@@ -3787,17 +4057,52 @@ async function setNodeCore(nodeId, core) {
 }
 
 async function refreshSubscription(id) {
-  const item = appState.subscriptions.find((candidate) => candidate.id === id);
-  if (!item) return;
+  await refreshSubscriptions([id]);
+}
+
+async function refreshSubscriptions(subscriptionIds, { automatic = false } = {}) {
+  if (appState.subscriptionsRefreshing || appState.batchChecking) return;
+  const subscriptions = subscriptionIds.map((id) => appState.subscriptions.find((item) => item.id === id)).filter(Boolean);
+  if (!subscriptions.length) return;
+  const refreshedIds = new Set();
+  const startedAt = Date.now();
+  subscriptions.forEach((item) => subscriptionRefreshAttemptAt.set(item.id, startedAt));
+  appState.subscriptionsRefreshing = true;
+  renderAll();
   try {
-    setSyncState("更新中", "busy");
-    const result = await invokeApi("refreshSubscription", id);
-    await refreshState();
-    showToast(`“${item.name || "订阅"}”已更新`, "success");
-    if (result?.recordedUnsupported) showToast(`有 ${result.recordedUnsupported} 个节点暂不支持`, "warn");
-  } catch (error) {
-    setSyncState("连接失败", "error");
-    showToast(error.message || "订阅更新失败", "error");
+    setSyncState(automatic ? "每日更新中" : "更新中", "busy");
+    const outcomes = await Promise.allSettled(subscriptions.map(async (item) => {
+      const result = await invokeApi("refreshSubscription", item.id, { mergeState: false });
+      return { item, result };
+    }));
+    let failedCount = 0;
+    outcomes.forEach((outcome) => {
+      const item = outcome.status === "fulfilled" ? outcome.value.item : null;
+      if (outcome.status === "fulfilled") {
+        const result = outcome.value.result;
+        refreshedIds.add(item.id);
+        if (!automatic) showToast(`“${item.name || "订阅"}”已更新`, "success");
+        if (result?.recordedUnsupported) showToast(`有 ${result.recordedUnsupported} 个节点暂不支持`, "warn");
+        return;
+      }
+      failedCount += 1;
+      const error = outcome.reason?.message || String(outcome.reason || "订阅更新失败");
+      showToast(error, "error");
+    });
+
+    const stateSynced = await refreshState();
+    const nodes = stateSynced
+      ? appState.nodes.filter((node) => refreshedIds.has(node.sourceId) && isVisibleNode(node))
+      : [];
+    if (nodes.length) await checkNodes(nodes);
+    if (automatic) {
+      const refreshedCount = subscriptions.length - failedCount;
+      showToast(`每日订阅更新完成：成功 ${refreshedCount} 个，失败 ${failedCount} 个`, failedCount ? "warn" : "success");
+    }
+  } finally {
+    appState.subscriptionsRefreshing = false;
+    renderAll();
+    scheduleSubscriptionAutoRefresh();
   }
 }
 
@@ -3848,17 +4153,30 @@ async function refreshAllSubscriptions() {
     showToast("还没有可更新的订阅", "warn");
     return;
   }
-  for (const item of subscriptions) await refreshSubscription(item.id);
+  await refreshSubscriptions(subscriptions.map((item) => item.id));
 }
 
 async function chooseEngine() {
   try {
     const result = await invokeApi("chooseEnginePath");
     const path = typeof result === "string" ? result : result?.path;
-    if (path) $("#engine-path").value = path;
+    if (path) {
+      enginePathDraft = path;
+      engineModeDraft = "external";
+      engineModeDraftDirty = appState.engine.mode !== "external";
+      $("#engine-path").value = path;
+      renderEngineSettings();
+    }
   } catch (error) {
     showToast(error.message || "无法选择 Chromium 文件", "error");
   }
+}
+
+function setEngineModeDraft(mode) {
+  if (mode !== "electron" && mode !== "external") return;
+  engineModeDraft = mode;
+  engineModeDraftDirty = mode !== appState.engine.mode;
+  renderEngineSettings();
 }
 
 async function chooseXray() {
@@ -3895,26 +4213,18 @@ async function installCore(core) {
   }
 }
 
-async function installBrowser() {
-  try {
-    setSyncState("下载浏览器内核", "busy");
-    await invokeApi("installBrowser");
-    await refreshState();
-    showToast("Chromium 浏览器内核已安装并设为外部引擎", "success");
-  } catch (error) {
-    setSyncState("连接失败", "error");
-    showToast(error.message || "浏览器内核更新失败", "error");
-  }
-}
-
 async function saveSettings() {
   const enginePath = $("#engine-path")?.value.trim() || "";
+  const engineMode = engineModeDraft || (appState.engine.mode === "external" ? "external" : "electron");
   const xrayPath = $("#xray-path")?.value.trim() || "";
   const singboxPath = $("#singbox-path")?.value.trim() || "";
   const defaultCore = $("#default-core-settings")?.value || "xray";
   const theme = themeFromForm();
   try {
-    await invokeApi("saveSettings", { enginePath, xrayPath, singboxPath, defaultCore, theme });
+    await invokeApi("saveSettings", { engineMode, enginePath, xrayPath, singboxPath, defaultCore, theme });
+    engineModeDraft = null;
+    engineModeDraftDirty = false;
+    enginePathDraft = null;
     await refreshState();
     showToast("设置已保存", "success");
   } catch (error) {
@@ -3944,7 +4254,11 @@ function handleAction(action, id, direction = "") {
     case "launch-profile":
       void launchProfileDirect(id);
       break;
+    case "toggle-profile-engine":
+      void toggleProfileEngine(id);
+      break;
     case "import-subscription":
+      if (appState.subscriptionImportBusy) break;
       fillSubscriptionForm();
       openModal("import-modal");
       break;
@@ -4099,6 +4413,26 @@ function handleAction(action, id, direction = "") {
 
 function attachApiEvents() {
   if (typeof api.onStateUpdated === "function") api.onStateUpdated((state) => mergeState(state));
+  if (typeof api.onProfileAutoFailover === "function") api.onProfileAutoFailover((event) => {
+    if (!event?.profileId) return;
+    if (event.status === "switching") {
+      appState.profileAutoFailoverStates[event.profileId] = "switching";
+      appState.profileStatuses[event.profileId] = "switching";
+      renderAll();
+      return;
+    }
+    delete appState.profileStatuses[event.profileId];
+    if (event.status === "unavailable") appState.profileAutoFailoverStates[event.profileId] = "unavailable";
+    else delete appState.profileAutoFailoverStates[event.profileId];
+    void refreshState();
+    if (event.status === "switched") {
+      const route = event.nodeName ? `“${event.nodeName}”` : "备用节点";
+      const latency = Number.isFinite(Number(event.latencyMs)) ? ` · ${Math.round(Number(event.latencyMs))} ms` : "";
+      showToast(`线路故障，已自动切换到 ${route}${latency}；出口 IP 可能变化`, "warn");
+    } else if (event.status === "unavailable") {
+      showToast("订阅自动线路故障，当前没有可用备用节点", "error");
+    }
+  });
   if (typeof api.onConfirmationRequest === "function") api.onConfirmationRequest((request) => {
     if (!request?.requestId) return;
     void requestConfirmation(request.options || {})
@@ -4286,6 +4620,16 @@ function attachDomEvents() {
       appState.extensionStore.routePicker.open = "";
       renderExtensionStoreProxySelectors();
     }
+    const connectionSubscriptionOption = event.target.closest("[data-connection-subscription-option]");
+    if (connectionSubscriptionOption) {
+      event.preventDefault();
+      const picker = connectionSubscriptionOption.closest("[data-connection-picker]");
+      const profileId = picker?.dataset.profileId || "";
+      const subscriptionId = connectionSubscriptionOption.dataset.subscriptionId || "";
+      closeConnectionPicker();
+      void switchProfileSubscription(profileId, subscriptionId);
+      return;
+    }
     const connectionOption = event.target.closest("[data-connection-option]");
     if (connectionOption) {
       event.preventDefault();
@@ -4362,6 +4706,13 @@ function attachDomEvents() {
 
   $("#refresh-state")?.addEventListener("click", () => void refreshState(true));
   $("#profile-form")?.addEventListener("submit", (event) => void saveProfile(event));
+  $$('[data-profile-engine-mode]').forEach((button) => {
+    button.addEventListener("click", () => {
+      $$('[data-profile-engine-mode]').forEach((option) => {
+        option.setAttribute("aria-pressed", String(option === button));
+      });
+    });
+  });
   $("#import-form")?.addEventListener("submit", (event) => void importSubscription(event));
   $("#node-form")?.addEventListener("submit", (event) => void saveNode(event));
   $("#extension-form")?.addEventListener("submit", (event) => void saveExtension(event));
@@ -4387,12 +4738,22 @@ function attachDomEvents() {
   $("#manager-agent-base-url")?.addEventListener("input", () => { agentModelFetchKey = ""; });
   $("#manager-agent-token")?.addEventListener("input", () => { agentModelFetchKey = ""; });
   $("#node-protocol")?.addEventListener("change", updateNodeTransportFields);
+  $$('[data-engine-mode]').forEach((button) => {
+    button.addEventListener("click", () => setEngineModeDraft(button.dataset.engineMode));
+  });
+  $("#engine-path")?.addEventListener("input", (event) => {
+    enginePathDraft = event.currentTarget.value;
+    if (enginePathDraft.trim()) {
+      engineModeDraft = "external";
+      engineModeDraftDirty = appState.engine.mode !== "external";
+    }
+    renderEngineSettings();
+  });
   $("#choose-engine")?.addEventListener("click", () => void chooseEngine());
   $("#choose-xray")?.addEventListener("click", () => void chooseXray());
   $("#choose-singbox")?.addEventListener("click", () => void chooseSingbox());
   $("#install-xray")?.addEventListener("click", () => void installCore("xray"));
   $("#install-singbox")?.addEventListener("click", () => void installCore("singbox"));
-  $("#install-browser")?.addEventListener("click", () => void installBrowser());
   $("#choose-extension")?.addEventListener("click", () => void chooseExtension());
   $("#choose-unpacked-extension")?.addEventListener("click", () => void chooseUnpackedExtension());
   $("#save-settings")?.addEventListener("click", () => void saveSettings());
@@ -4405,20 +4766,6 @@ function attachDomEvents() {
     if (elements.token) elements.token.value = "";
     if (elements.tokenStatus) elements.tokenStatus.textContent = "保存后清除 Token";
     if (elements.tokenClear) elements.tokenClear.hidden = true;
-  });
-  $("#manager-jev-token-clear")?.addEventListener("click", () => {
-    clearManagerJevToken = true;
-    const elements = agentFormElements();
-    if (elements.jevToken) elements.jevToken.value = "";
-    if (elements.jevTokenStatus) elements.jevTokenStatus.textContent = "保存后清除 Key";
-    if (elements.jevTokenClear) elements.jevTokenClear.hidden = true;
-  });
-  $("#manager-jev-provider")?.addEventListener("change", (event) => {
-    const baseUrl = $("#manager-jev-base-url");
-    if (!baseUrl) return;
-    const value = String(event.target?.value || "");
-    if (value === "custom" && baseUrl.value.trim() === "https://api.typesafe.ai") baseUrl.value = "";
-    if (value === "typesafe" && !baseUrl.value.trim()) baseUrl.value = "https://api.typesafe.ai";
   });
   $("#save-theme")?.addEventListener("click", () => void saveSettings());
   $("#theme-preset")?.addEventListener("change", (event) => {

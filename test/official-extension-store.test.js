@@ -68,6 +68,43 @@ test('extracts official search results from explicit detail links and IDs', () =
   assert.deepEqual(parseOfficialStoreSearchHtml('<html><body>no store results</body></html>'), []);
 });
 
+test('keeps each official search result name instead of reusing the search keyword', () => {
+  const html = `
+    <a href="/detail/${EXTENSION_ID}"><span>Web Accessibility</span></a>
+    <a href="/detail/${SECOND_EXTENSION_ID}"><span>Web Accessibility Pro</span></a>
+  `;
+  const results = parseOfficialStoreSearchHtml(html, '无障碍');
+  assert.deepEqual(results.map((item) => item.name), ['Web Accessibility', 'Web Accessibility Pro']);
+});
+
+test('associates name fields with the matching official extension ID', () => {
+  const html = `
+    {"id":"${EXTENSION_ID}","name":"Web Accessibility"},
+    {"id":"${SECOND_EXTENSION_ID}","name":"Web Accessibility Pro"}
+  `;
+  const results = parseOfficialStoreSearchHtml(html, '无障碍');
+  assert.deepEqual(results.map((item) => item.name), ['Web Accessibility', 'Web Accessibility Pro']);
+});
+
+test('extracts each name and summary from the real Chrome Web Store card structure', () => {
+  const html = [
+    '<div class="Cb7Kte" data-item-id="' + EXTENSION_ID + '">',
+    '<a href="./detail/web-accessibility/' + EXTENSION_ID + '" aria-labelledby="i6"></a>',
+    '<div><h2 id="i6">Web Accessibility</h2>',
+    '<p class="rQHEi">publisher.example</p><p class="g3IrHd">Accessibility testing tool</p></div></div>',
+    '<div class="Cb7Kte" data-item-id="' + SECOND_EXTENSION_ID + '">',
+    '<a href="./detail/web-accessibility-pro/' + SECOND_EXTENSION_ID + '" aria-labelledby="i10"></a>',
+    '<div><h2 id="i10">Web Accessibility Pro</h2>',
+    '<p class="rQHEi">publisher-pro.example</p><p class="g3IrHd">Helps users access the internet</p></div></div>',
+  ].join('');
+  const results = parseOfficialStoreSearchHtml(html, '无障碍');
+  assert.deepEqual(results.map((item) => item.name), ['Web Accessibility', 'Web Accessibility Pro']);
+  assert.deepEqual(results.map((item) => item.description), [
+    'Accessibility testing tool',
+    'Helps users access the internet',
+  ]);
+});
+
 test('extracts detail metadata without confusing minimum Chrome version for extension version', () => {
   const html = `
     <html>

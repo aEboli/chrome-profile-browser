@@ -6,6 +6,10 @@ const partition = params.get('partition') || '';
 const initialCountry = params.get('connectionCountry') || '系统直连';
 const initialIp = params.get('connectionIp') || '未解析';
 const initialLatency = params.get('connectionLatency') || '未测';
+let connectionMode = params.get('connectionMode') || 'direct';
+let connectionRefreshInFlight = false;
+let connectionRouteSwitchInFlight = false;
+let connectionRouteMenuRequest = 0;
 const profileId = params.get('profileId') || '';
 const DEFAULT_SEARCH_ENGINE_URL = 'https://www.google.com/search?q=%s';
 const DEFAULT_SEARCH_ENGINES = [
@@ -36,6 +40,16 @@ const AGENT_HUMAN_CLICK = Object.freeze({
 });
 
 const pages = document.querySelector('#pages');
+const pageFind = document.querySelector('#page-find');
+const pageFindInput = document.querySelector('#page-find-input');
+const pageFindCount = document.querySelector('#page-find-count');
+const backButton = document.querySelector('#back');
+const forwardButton = document.querySelector('#forward');
+const reloadButton = document.querySelector('#reload');
+const mutedSiteHosts = new Set();
+let historyRevision = 0;
+let downloadNoticeTimer = 0;
+let nextFindToken = 0;
 const pageViewport = document.querySelector('.page-viewport');
 const passwordVaultPrompt = document.querySelector('#password-vault-prompt');
 const shellInputModal = document.querySelector('#shell-input-modal');
@@ -57,6 +71,11 @@ const tabSwitcherPanel = document.querySelector('#tab-switcher-panel');
 const tabSwitcherSearch = document.querySelector('#tab-switcher-search');
 const tabSwitcherOpenList = document.querySelector('#tab-switcher-open');
 const tabSwitcherClosedList = document.querySelector('#tab-switcher-closed');
+const connectionDetailsButton = document.querySelector('#connection-details');
+const connectionRefreshSpinner = document.querySelector('#connection-refresh-spinner');
+const connectionRefreshNotice = document.querySelector('#connection-refresh-notice');
+const connectionRouteMenu = document.querySelector('#connection-route-menu');
+let connectionRefreshNoticeTimer = 0;
 const browserMoreToggle = document.querySelector('#browser-more-toggle');
 const browserMoreMenu = document.querySelector('#browser-more-menu');
 const browserSettingsToggle = document.querySelector('#browser-settings-toggle');
@@ -106,7 +125,6 @@ const agentSettingScope = document.querySelector('#agent-setting-scope');
 const agentTokenInput = document.querySelector('#agent-setting-token');
 const agentTokenStatus = document.querySelector('#agent-setting-token-status');
 const agentTokenClear = document.querySelector('#agent-setting-token-clear');
-const agentJevEnabledInput = document.querySelector('#agent-setting-jev-enabled');
 const agentContextInput = document.querySelector('#agent-setting-context');
 const agentOutputInput = document.querySelector('#agent-setting-output');
 const agentReasoningInput = document.querySelector('#agent-setting-reasoning');
@@ -117,7 +135,6 @@ let activeTabId = '';
 let shellInterfaceZoom = null;
 let nextTabId = 1;
 const tabItems = [];
-const TAB_BASE_WIDTH = 180;
 const TAB_GAP = 3;
 const TAB_DRAG_THRESHOLD = 6;
 let tabActiveSurfaceFrame = 0;
@@ -148,6 +165,7 @@ const extensionsPanel = document.querySelector('#extensions-panel');
 const extensionsClose = document.querySelector('#extensions-close');
 const extensionsList = document.querySelector('#extensions-list');
 const extensionsEmpty = document.querySelector('#extensions-empty');
+const extensionsCompatibility = document.querySelector('#extensions-compatibility');
 const extensionsStatus = document.querySelector('#extensions-status');
 const extensionCount = document.querySelector('#extension-count');
 const downloadsToggle = document.querySelector('#downloads-toggle');
@@ -178,8 +196,13 @@ const agentHumanVerificationResume = document.querySelector('#agent-human-verifi
 const agentTranscript = document.querySelector('#agent-transcript');
 const agentComposerForm = document.querySelector('#agent-composer-form');
 const agentComposer = document.querySelector('#agent-composer');
+const agentComposerAttachments = document.querySelector('#agent-composer-attachments');
+const agentComposerAttachmentStatus = document.querySelector('#agent-composer-attachment-status');
 const agentSend = document.querySelector('#agent-send');
 const agentContextUsage = document.querySelector('#agent-context-usage');
+const agentContextTooltip = document.querySelector('#agent-context-tooltip');
+const agentContextTooltipPercent = document.querySelector('#agent-context-tooltip-percent');
+const agentContextTooltipTokens = document.querySelector('#agent-context-tooltip-tokens');
 const agentContextUsageUtils = window.browserAgentContextUsage;
 const agentModelPicker = document.querySelector('#agent-model-picker');
 const agentModelPickerStatus = document.querySelector('#agent-model-picker-status');
@@ -188,7 +211,6 @@ const agentReasoningOptions = document.querySelector('#agent-reasoning-options')
 const agentModelRefresh = document.querySelector('#agent-model-refresh');
 const agentActions = window.browserAgentActions || {};
 const agentRetry = window.browserAgentRetry || {};
-const agentCompletion = window.browserAgentCompletion || {};
 let tornDown = false;
 let extensionItems = [];
 let agentBusy = false;
@@ -215,6 +237,10 @@ let agentTaskElapsedMs = 0;
 let agentTaskTimerActive = false;
 let agentContextLastCompressionTokens = 0;
 let agentContextNoticeTimer = null;
+const AGENT_IMAGE_DATA_URL_LIMIT = 10_000_000;
+let agentComposerImages = [];
+let nextAgentComposerImageId = 1;
+let agentImageReadQueue = Promise.resolve();
 let searchEngineUrl = DEFAULT_SEARCH_ENGINE_URL;
 let searchEngines = DEFAULT_SEARCH_ENGINES.map((item) => ({ ...item }));
 let bookmarks = [];
@@ -228,8 +254,12 @@ let localListeners = [];
 let localListenersRequest = 0;
 let navigationHistory = [];
 let recognizedNewTabSites = [];
+let recognizedNewTabSitesLoaded = false;
 let recentNewTabSearches = [];
-const newTabSiteFaviconCache = new Map();
+const newTabSiteFaviconCache = window.NewTabSiteFaviconCache.create(
+  () => window.localStorage,
+  `new-tab-site-favicons:${profileId || 'default'}`,
+);
 const newTabSiteFaviconRequests = new Map();
 let addressSuggestionIndex = -1;
 let addressEditing = false;
@@ -244,7 +274,6 @@ let browserSettings = {
   agentApi: '',
   agentKeySet: false,
   agentTokenSet: false,
-  jevKeySet: false,
   agentProtocol: 'openai-chat-completions',
   agentBaseUrl: '',
   agentModel: '',
@@ -256,7 +285,6 @@ let browserSettings = {
   agentEnabled: true,
   agentSource: 'global',
   agentProtocols: [],
-  jevAutoJudgeEnabled: true,
   searchEngineUrl: DEFAULT_SEARCH_ENGINE_URL,
   searchEngines: DEFAULT_SEARCH_ENGINES.map((item) => ({ ...item })),
   bookmarkBarAlwaysVisible: false,
@@ -290,6 +318,7 @@ function readAgentTheme() {
 function setAgentTheme(nextTheme, { persist = true } = {}) {
   const theme = normalizeAgentTheme(nextTheme);
   if (agentPanel) agentPanel.dataset.theme = theme;
+  if (document.body) document.body.dataset.agentTheme = theme;
   if (agentThemeToggle) {
     const nextLabel = theme === 'dark' ? '切换到浅色主题' : '切换到深色主题';
     agentThemeToggle.title = nextLabel;
@@ -300,10 +329,199 @@ function setAgentTheme(nextTheme, { persist = true } = {}) {
   }
 }
 
-document.querySelector('#profile-name').textContent = profileName;
-document.querySelector('#connection-country').textContent = initialCountry;
-document.querySelector('#connection-ip').textContent = initialIp;
-document.querySelector('#connection-latency').textContent = initialLatency;
+function setIdentityText(selector, value) {
+  const element = document.querySelector(selector);
+  if (!element) return;
+  element.textContent = value;
+  element.title = value;
+}
+
+function connectionRefreshTitle() {
+  if (connectionMode === 'subscription') return '左键重新测速并自动切换热节点，右键手动切换线路';
+  if (connectionMode === 'node') return '左键重新检测当前节点延迟，右键手动切换线路';
+  return '左键重新检测直连，右键手动切换线路';
+}
+
+function setConnectionRefreshState(refreshing) {
+  if (!connectionDetailsButton) return;
+  const busy = refreshing || connectionRouteSwitchInFlight;
+  connectionDetailsButton.disabled = busy;
+  connectionDetailsButton.setAttribute('aria-busy', busy ? 'true' : 'false');
+  connectionDetailsButton.classList.toggle('is-refreshing', refreshing);
+  connectionDetailsButton.classList.toggle('is-switching', connectionRouteSwitchInFlight);
+  if (connectionRefreshSpinner) connectionRefreshSpinner.hidden = !busy;
+  connectionDetailsButton.title = connectionRouteSwitchInFlight ? '切换线路中' : refreshing ? '检测中' : connectionRefreshTitle();
+  connectionDetailsButton.setAttribute('aria-label', connectionDetailsButton.title);
+}
+
+function setConnectionRefreshNotice(label, kind = '', duration = 3500) {
+  if (!connectionRefreshNotice) return;
+  window.clearTimeout(connectionRefreshNoticeTimer);
+  connectionRefreshNotice.hidden = !label;
+  connectionRefreshNotice.textContent = label;
+  connectionRefreshNotice.dataset.state = kind;
+  if (label && duration > 0) {
+    connectionRefreshNoticeTimer = window.setTimeout(() => {
+      connectionRefreshNotice.hidden = true;
+      connectionRefreshNotice.textContent = '';
+    }, duration);
+  }
+}
+
+function closeConnectionRouteMenu(restoreFocus = false) {
+  connectionRouteMenuRequest += 1;
+  if (connectionRouteMenu) {
+    connectionRouteMenu.hidden = true;
+    connectionRouteMenu.innerHTML = '';
+  }
+  connectionDetailsButton?.setAttribute('aria-expanded', 'false');
+  if (restoreFocus) connectionDetailsButton?.focus({ preventScroll: true });
+}
+
+function positionConnectionRouteMenu(x, y) {
+  if (!connectionRouteMenu || connectionRouteMenu.hidden) return;
+  const width = connectionRouteMenu.offsetWidth || 360;
+  const height = connectionRouteMenu.offsetHeight || 320;
+  const margin = 10;
+  const anchor = connectionDetailsButton?.getBoundingClientRect?.();
+  const requestedX = Number(x);
+  const requestedY = Number(y);
+  const anchorX = Number(anchor?.right) || margin;
+  const anchorY = Number(anchor?.bottom) || margin;
+  const left = Math.max(margin, Math.min(Number.isFinite(requestedX) && requestedX > 0 ? requestedX : anchorX, window.innerWidth - width - margin));
+  const top = Math.max(margin, Math.min(Number.isFinite(requestedY) && requestedY > 0 ? requestedY : anchorY, window.innerHeight - height - margin));
+  connectionRouteMenu.style.left = `${Math.round(left)}px`;
+  connectionRouteMenu.style.top = `${Math.round(top)}px`;
+}
+
+function compactRouteMetadata(value) {
+  return String(value || '未查询').trim().replace(/IP$/i, '').trim() || '未查询';
+}
+
+function renderConnectionRouteMenu(data = {}) {
+  if (!connectionRouteMenu) return;
+  if (data.loading) {
+    connectionRouteMenu.innerHTML = '<div class="connection-route-menu-heading">手动切换线路</div><div class="connection-route-menu-status">正在读取线路…</div>';
+    return;
+  }
+  if (data.error) {
+    connectionRouteMenu.innerHTML = `<div class="connection-route-menu-heading">手动切换线路</div><div class="connection-route-menu-status connection-route-menu-status--error">${escapeHtml(data.error)}</div>`;
+    return;
+  }
+  const groups = Array.isArray(data.groups) ? data.groups : [];
+  const groupMarkup = groups.map((group) => {
+    const options = Array.isArray(group?.options) ? group.options : [];
+    if (!options.length) return '';
+    const optionMarkup = options.map((option) => {
+      const type = escapeHtml(option.type || '');
+      const nodeId = escapeHtml(option.nodeId || '');
+      const subscriptionId = escapeHtml(option.subscriptionId || '');
+      const labelText = option.label || '未命名线路';
+      const metaText = option.meta || '';
+      const label = escapeHtml(labelText);
+      const meta = escapeHtml(metaText);
+      const selected = option.selected === true;
+      const disabled = option.disabled === true;
+      const isNode = option.type === 'node';
+      const ipAddressText = option.ipAddress || '未解析';
+      const metadataValues = [option.country || '未查询', compactRouteMetadata(option.ipSource), compactRouteMetadata(option.ipProperty)];
+      const metadataText = metadataValues.join(' · ');
+      const latencyText = option.latency || '未测速';
+      const latencyLabel = /ms$/i.test(latencyText) ? latencyText : `延迟：${latencyText}`;
+      const metadataTone = option.ipSource?.includes('广播') ? 'broadcast'
+        : option.ipProperty?.includes('住宅') ? 'residential'
+          : option.ipProperty?.includes('机房') ? 'datacenter'
+            : option.ipSource?.includes('原生') ? 'native' : 'unknown';
+      const copy = isNode
+        ? `<span class="connection-route-option-copy"><span class="connection-route-option-name" title="${escapeHtml(ipAddressText)}">${escapeHtml(ipAddressText)}</span><span class="connection-route-option-meta connection-route-option-meta--${metadataTone}" title="${escapeHtml(metadataText)}"><span>${escapeHtml(metadataValues[0])}</span><span>${escapeHtml(metadataValues[1])}</span><span>${escapeHtml(metadataValues[2])}</span></span><span class="connection-route-option-latency">${escapeHtml(latencyLabel)}</span></span>`
+        : `<span class="connection-route-option-copy"><span class="connection-route-option-name">${label}</span><span class="connection-route-option-meta">${meta}</span></span>`;
+      const accessibleLabel = isNode
+        ? escapeHtml([labelText, metaText, ipAddressText, metadataText, latencyLabel].filter(Boolean).join(' · '))
+        : label;
+      return `<button class="connection-route-option${isNode ? ' connection-route-option--node' : ''}${selected ? ' is-selected' : ''}" type="button" role="menuitemradio" aria-checked="${selected ? 'true' : 'false'}" aria-label="${accessibleLabel}" title="${escapeHtml([labelText, metaText].filter(Boolean).join(' · '))}" data-connection-route-option data-route-type="${type}" data-node-id="${nodeId}" data-subscription-id="${subscriptionId}" data-route-label="${label}"${disabled ? ' disabled' : ''}>${copy}<span class="connection-route-option-mark" aria-hidden="true">${selected ? '✓' : ''}</span></button>`;
+    }).join('');
+    return `<section class="connection-route-group"><div class="connection-route-group-label">${escapeHtml(group.label || '线路')}</div>${optionMarkup}</section>`;
+  }).join('');
+  connectionRouteMenu.innerHTML = `<div class="connection-route-menu-heading">手动切换线路</div>${groupMarkup || '<div class="connection-route-menu-status">没有可用线路</div>'}`;
+}
+
+async function openConnectionRouteMenu(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (!connectionRouteMenu || connectionRefreshInFlight || connectionRouteSwitchInFlight) return;
+  dismissBrowserPopovers();
+  const request = ++connectionRouteMenuRequest;
+  connectionRouteMenu.hidden = false;
+  connectionDetailsButton?.setAttribute('aria-expanded', 'true');
+  renderConnectionRouteMenu({ loading: true });
+  positionConnectionRouteMenu(event.clientX, event.clientY);
+  try {
+    if (typeof window.shellApi?.getConnectionRoutes !== 'function') throw new Error('线路切换服务未就绪，请重启应用后重试');
+    const response = await window.shellApi.getConnectionRoutes();
+    if (request !== connectionRouteMenuRequest || connectionRouteMenu.hidden) return;
+    if (!response || response.ok === false) throw new Error(response?.error || '线路列表读取失败');
+    renderConnectionRouteMenu(response);
+    positionConnectionRouteMenu(event.clientX, event.clientY);
+    connectionRouteMenu.querySelector('[data-connection-route-option]:not(:disabled)')?.focus();
+  } catch (error) {
+    if (request !== connectionRouteMenuRequest || connectionRouteMenu.hidden) return;
+    renderConnectionRouteMenu({ error: error?.message || '线路列表读取失败' });
+    positionConnectionRouteMenu(event.clientX, event.clientY);
+    setShellStatus(error?.message || '线路列表读取失败', 'error');
+  }
+}
+
+async function switchConnectionRoute(option) {
+  if (!option || connectionRouteSwitchInFlight) return;
+  const type = option.dataset.routeType || '';
+  if (!['direct', 'node', 'subscription'].includes(type)) return;
+  connectionRouteSwitchInFlight = true;
+  closeConnectionRouteMenu();
+  setConnectionRefreshState(false);
+  const label = option.dataset.routeLabel || '目标线路';
+  const input = {
+    type,
+    nodeId: option.dataset.nodeId || '',
+    subscriptionId: option.dataset.subscriptionId || '',
+  };
+  setConnectionRefreshNotice(`正在切换到“${label}”…`, 'busy', 0);
+  setShellStatus(`正在切换到“${label}”`, 'busy');
+  try {
+    if (typeof window.shellApi?.switchConnectionRoute !== 'function') throw new Error('线路切换服务未就绪，请重启应用后重试');
+    const response = await window.shellApi.switchConnectionRoute(input);
+    if (!response || response.ok === false) throw new Error(response?.error || '线路切换失败');
+    if (response.cancelled) {
+      setConnectionRefreshNotice('已取消线路切换', 'busy');
+      setShellStatus('已取消线路切换', 'busy');
+    } else {
+      const message = type === 'subscription' ? `已启用“${label}”` : `已切换到“${label}”`;
+      setConnectionRefreshNotice(message, 'success');
+      setShellStatus(message, 'success');
+    }
+  } catch (error) {
+    const message = error?.message || '线路切换失败';
+    setConnectionRefreshNotice(message, 'error', 5000);
+    setShellStatus(message, 'error');
+  } finally {
+    connectionRouteSwitchInFlight = false;
+    setConnectionRefreshState(false);
+  }
+}
+
+function applyConnectionDetails(details) {
+  if (!details || typeof details !== 'object') return;
+  if (details.mode) connectionMode = String(details.mode);
+  setIdentityText('#connection-country', details.country || '未知国家');
+  setIdentityText('#connection-ip', details.ip || '未解析');
+  setIdentityText('#connection-latency', details.latency || '未测');
+  setConnectionRefreshState(connectionRefreshInFlight);
+}
+
+setIdentityText('#profile-name', profileName);
+setIdentityText('#connection-country', initialCountry);
+setIdentityText('#connection-ip', initialIp);
+setIdentityText('#connection-latency', initialLatency);
+setConnectionRefreshState(false);
 document.title = `${profileName} · ${brandName}`;
 setAgentTheme(readAgentTheme(), { persist: false });
 
@@ -474,7 +692,7 @@ function createBookmarkEntryButton(item, inMenu = false) {
     const current = bookmarkById(button.dataset.bookmarkEntryId);
     event.preventDefault();
     event.stopPropagation();
-    if (current?.type === 'bookmark') openBookmarkEntry(current, { newTab: true });
+    if (current?.type === 'bookmark') openBookmarkEntry(current, { newTab: true, activate: event.shiftKey === true });
   });
   return button;
 }
@@ -727,7 +945,7 @@ function bookmarkOpensInNewTab(event) {
   return event?.button === 1 || event?.ctrlKey === true || event?.metaKey === true;
 }
 
-function openBookmarkEntry(item, { newTab = false } = {}) {
+function openBookmarkEntry(item, { newTab = false, activate = true } = {}) {
   if (!item || item.type !== 'bookmark') return false;
   const url = bookmarkableUrl(item.url);
   if (!url) {
@@ -737,7 +955,7 @@ function openBookmarkEntry(item, { newTab = false } = {}) {
   }
   closeBookmarkMenu();
   if (newTab) {
-    const created = createTab(url);
+    const created = createTab(url, { activate });
     if (!created) {
       setShellStatus('无法创建新标签页', 'error');
       return false;
@@ -764,7 +982,7 @@ function handleBookmarkEntryClick(event, item, button) {
     openBookmarkFolder(item.id, button);
     return;
   }
-  openBookmarkEntry(item, { newTab: bookmarkOpensInNewTab(event) });
+  openBookmarkEntry(item, { newTab: bookmarkOpensInNewTab(event), activate: event.shiftKey === true });
 }
 
 function showBookmarkContextMenu(event, item) {
@@ -814,7 +1032,7 @@ function hideAddressSchemeForEditing() {
     addressHiddenScheme = '';
     return;
   }
-  addressHiddenScheme = match[1];
+  addressHiddenScheme = match[0];
   const prefixLength = addressHiddenScheme.length;
   const selectionStart = address.selectionStart;
   const selectionEnd = address.selectionEnd;
@@ -969,14 +1187,22 @@ function chooseActiveAddressSuggestion() {
   return true;
 }
 
-function recordNavigation(url, title = '') {
-  const normalized = bookmarkableUrl(url);
-  if (!normalized) return;
-  navigationHistory = [
-    { url: normalized, title: title || tabFallbackTitle(normalized) },
-    ...navigationHistory.filter((item) => item.url !== normalized),
-  ].slice(0, 30);
-  for (const item of tabItems) if (item.isHistory) renderHistoryPage(item);
+function applyBrowsingHistory(history) {
+  historyRevision += 1;
+  navigationHistory = Array.isArray(history) ? history : [];
+  for (const item of tabItems) if (item.isHistory) renderHistoryPage(item, item.historyQuery || '');
+}
+
+async function refreshBrowsingHistory() {
+  const revision = historyRevision;
+  try {
+    const result = await window.shellApi?.getHistory?.();
+    if (result?.ok && revision === historyRevision) applyBrowsingHistory(result.history);
+  } catch { /* A failed history read must not interrupt navigation. */ }
+}
+
+function recordNavigation() {
+  void refreshBrowsingHistory();
 }
 
 function tabFallbackTitle(url) {
@@ -1220,7 +1446,7 @@ function createNewTabSiteButton(site) {
   image.className = 'new-tab-site-favicon';
   image.alt = '';
   image.decoding = 'async';
-  image.loading = 'lazy';
+  image.loading = 'eager';
   image.hidden = true;
   const fallback = document.createElement('span');
   fallback.className = 'new-tab-site-fallback';
@@ -1230,10 +1456,20 @@ function createNewTabSiteButton(site) {
     fallback.hidden = true;
     icon.classList.add('has-image');
   });
+  let faviconRetryRequested = false;
+  let displayedFavicon = '';
   image.addEventListener('error', () => {
     image.hidden = true;
     fallback.hidden = false;
     icon.classList.remove('has-image');
+    if (faviconRetryRequested || !displayedFavicon || newTabSiteFaviconCache.get(site.url) !== displayedFavicon) return;
+    faviconRetryRequested = true;
+    newTabSiteFaviconCache.delete(site.url);
+    void loadNewTabSiteFavicon(site).then((favicon) => {
+      if (!favicon || !image.isConnected) return;
+      displayedFavicon = favicon;
+      image.src = favicon;
+    });
   });
   icon.append(image, fallback);
   const name = document.createElement('span');
@@ -1242,9 +1478,18 @@ function createNewTabSiteButton(site) {
   button.append(icon, name);
   void loadNewTabSiteFavicon(site).then((favicon) => {
     if (!favicon || !image.isConnected) return;
+    displayedFavicon = favicon;
     image.src = favicon;
   });
-  button.addEventListener('click', () => navigateAddress(site.url));
+  button.addEventListener('click', (event) => {
+    if (event.ctrlKey || event.metaKey) createTab(site.url, { activate: event.shiftKey === true });
+    else navigateAddress(site.url);
+  });
+  button.addEventListener('auxclick', (event) => {
+    if (event.button !== 1) return;
+    event.preventDefault();
+    createTab(site.url, { activate: event.shiftKey === true });
+  });
   return button;
 }
 
@@ -1260,7 +1505,9 @@ async function loadNewTabSiteFavicon(site) {
     favicon: typeof site.favicon === 'string' ? site.favicon : '',
   }).then((result) => {
     const favicon = /^data:image\//i.test(result?.favicon || '') ? result.favicon : '';
-    if (favicon) newTabSiteFaviconCache.set(url, favicon);
+    if (favicon && newTabSitesForRender().some((site) => String(site.url || '').trim() === url)) {
+      newTabSiteFaviconCache.set(url, favicon);
+    }
     return favicon;
   }).catch(() => '');
   newTabSiteFaviconRequests.set(url, request);
@@ -1299,12 +1546,19 @@ function newTabSitesForRender() {
   return sites;
 }
 
+function pruneRemovedNewTabSiteFavicons() {
+  if (!browserSettingsLoaded || !recognizedNewTabSitesLoaded) return;
+  newTabSiteFaviconCache.retain(newTabSitesForRender().map((site) => String(site.url || '').trim()));
+}
+
 async function refreshRecognizedNewTabSites() {
   if (!window.shellApi?.getCommonSites) return;
   try {
     const result = await window.shellApi.getCommonSites();
     if (result?.ok === false) return;
     recognizedNewTabSites = Array.isArray(result?.sites) ? result.sites : [];
+    recognizedNewTabSitesLoaded = true;
+    pruneRemovedNewTabSiteFavicons();
     for (const item of tabItems) if (item.isNewTab) renderNewTabPage(item);
   } catch {
     recognizedNewTabSites = [];
@@ -1578,6 +1832,9 @@ function renderNewTabPage(item) {
 function renderHistoryPage(item, query = '') {
   if (!item?.isHistory || !item.newTabView) return;
   const root = item.newTabView;
+  const focused = root.contains(document.activeElement) && document.activeElement?.matches('input');
+  const selection = focused ? document.activeElement.selectionStart : null;
+  item.historyQuery = query;
   root.replaceChildren();
   root.className = 'history-view';
   root.setAttribute('aria-label', '历史记录');
@@ -1595,10 +1852,10 @@ function renderHistoryPage(item, query = '') {
   clear.type = 'button';
   clear.className = 'history-view-clear';
   clear.textContent = '清空历史记录';
-  clear.addEventListener('click', () => {
-    navigationHistory = [];
-    for (const historyTab of tabItems) if (historyTab.isHistory) renderHistoryPage(historyTab);
-    setShellStatus('历史记录已清空', 'success');
+  clear.addEventListener('click', async () => {
+    if (!await requestShellConfirmation({ title: '清空历史记录', message: '清空当前环境的全部浏览历史？' })) return;
+    const result = await window.shellApi?.clearHistory?.();
+    if (result?.ok) { applyBrowsingHistory(result.history); setShellStatus('历史记录已清空', 'success'); }
   });
   header.append(heading, clear);
 
@@ -1643,10 +1900,25 @@ function renderHistoryPage(item, query = '') {
     copy.append(recordTitle, recordUrl);
     open.append(icon, copy);
     row.append(open);
+    const time = document.createElement('time');
+    const date = new Date(record.visitedAt);
+    time.textContent = Number.isNaN(date.getTime()) ? '' : date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'icon-button';
+    remove.title = '删除此记录';
+    remove.setAttribute('aria-label', `删除 ${record.title || record.url}`);
+    remove.append(createShellIcon('shell-icon-close'));
+    remove.addEventListener('click', async () => {
+      const result = await window.shellApi?.deleteHistory?.(record.url);
+      if (result?.ok) applyBrowsingHistory(result.history);
+    });
+    row.append(time, remove);
     list.append(row);
   }
   input.addEventListener('input', () => renderHistoryPage(item, input.value));
   root.append(header, controls, list);
+  if (focused) { input.focus(); try { input.setSelectionRange(selection, selection); } catch {} }
 }
 
 function openHistoryPage() {
@@ -1666,11 +1938,14 @@ function resetTabToHistory(item) {
   if (!item) return;
   if (passwordPromptState?.itemId === item.id) hidePasswordSavePrompt();
   clearPageLoadTimer(item);
-  try { item.view?.stop?.(); } catch {}
+  closePageFindFor(item);
   item.view?.remove?.();
   item.view = null;
   item.isNewTab = false;
   item.isHistory = true;
+  item.loading = false;
+  item.audible = false;
+  item.muted = false;
   item.url = 'about:history';
   item.title = '历史记录';
   item.agentView = null;
@@ -2000,6 +2275,66 @@ function setShellStatus(label, kind = '') {
   if (hiddenLabel) hiddenLabel.textContent = label;
 }
 
+async function refreshConnection() {
+  if (connectionRefreshInFlight) return;
+  if (!profileId) {
+    const message = '当前浏览器环境标识缺失，请关闭后重新打开环境';
+    setConnectionRefreshNotice(message, 'error', 5000);
+    setShellStatus(message, 'error');
+    return;
+  }
+  if (typeof window.shellApi?.refreshConnection !== 'function') {
+    const message = '连接检测服务未就绪，请重启应用后重试';
+    setConnectionRefreshNotice(message, 'error', 5000);
+    setShellStatus(message, 'error');
+    return;
+  }
+  connectionRefreshInFlight = true;
+  setConnectionRefreshState(true);
+  setConnectionRefreshNotice('正在检测连接…', 'busy', 0);
+  setShellStatus('正在检测连接', 'busy');
+  try {
+    const response = await window.shellApi.refreshConnection();
+    if (!response || typeof response !== 'object') throw new Error('连接检测服务未返回结果，请重启应用后重试');
+    if (response?.ok === false) throw new Error(response.error || '连接检测失败');
+    const result = response?.result;
+    if (response?.mode === 'subscription') {
+      if (response.available !== true) {
+        setConnectionRefreshNotice('订阅暂无可用线路', 'error', 5000);
+        setShellStatus('订阅暂无可用线路', 'error');
+      } else if (response.switched) {
+        const route = response.nodeName ? `“${response.nodeName}”` : '热节点';
+        const latency = Number.isFinite(Number(response.latencyMs)) ? ` · ${Math.round(Number(response.latencyMs))} ms` : '';
+        const message = `已切换到 ${route}${latency}；出口 IP 可能变化`;
+        setConnectionRefreshNotice(message, 'success', 5000);
+        setShellStatus(message, 'success');
+      } else {
+        setConnectionRefreshNotice('订阅线路已重新测速', 'success');
+        setShellStatus('订阅线路已重新测速', 'success');
+      }
+    } else if (result?.ok === false) {
+      const message = response?.mode === 'node' ? '当前节点不可达' : '直连不可达';
+      setConnectionRefreshNotice(message, 'error', 5000);
+      setShellStatus(message, 'error');
+    } else {
+      const message = response?.mode === 'node' ? '当前节点延迟已更新' : '直连延迟已更新';
+      setConnectionRefreshNotice(message, 'success');
+      setShellStatus(message, 'success');
+    }
+  } catch (error) {
+    const errorMessage = error?.message || '';
+    const message = errorMessage.includes('No handler registered')
+      && errorMessage.includes('browser-shell:refresh-connection')
+      ? '连接检测服务未就绪，请重启应用后重试'
+      : errorMessage || '连接检测失败';
+    setConnectionRefreshNotice(message, 'error', 5000);
+    setShellStatus(message, 'error');
+  } finally {
+    connectionRefreshInFlight = false;
+    setConnectionRefreshState(false);
+  }
+}
+
 function syncTabActiveSurface() {
   const activeSurface = tabActiveSurface || tabs?.querySelector('.tab-active-surface');
   const active = tabs?.querySelector('.browser-tab.is-active');
@@ -2007,7 +2342,7 @@ function syncTabActiveSurface() {
   activeSurface.style.setProperty('--tab-accent', active.dataset.tabAccent || '#6d96ff');
   activeSurface.style.setProperty('--tab-page-color', active.dataset.pageColor || '');
   activeSurface.style.width = `${active.offsetWidth}px`;
-  activeSurface.style.transform = `translate3d(${active.offsetLeft}px, 0, 0)`;
+  activeSurface.style.transform = `translate3d(${active.offsetLeft}px, -50%, 0)`;
 }
 
 function fallbackTabAccent(seed = '') {
@@ -2334,7 +2669,7 @@ function toggleTabSwitcher() {
 }
 
 function rememberClosedTab(item) {
-  if (!item || isNewTabUrl(item.url)) return;
+  if (!item || isShellPage(item) || isNewTabUrl(item.url)) return;
   updateActiveTabUrlFor(item);
   recentlyClosedTabs.unshift({
     id: `closed-tab-${nextClosedTabId++}`,
@@ -2342,6 +2677,8 @@ function rememberClosedTab(item) {
     url: item.url || '',
     favicon: item.favicon || '',
     accent: item.accent || fallbackTabAccent(item.favicon || item.url || item.id),
+    index: tabItems.indexOf(item),
+    pinned: item.pinned === true,
   });
   recentlyClosedTabs.length = Math.min(recentlyClosedTabs.length, 20);
 }
@@ -2398,10 +2735,14 @@ function updateTabDrag(event) {
   const targetIndex = [...tabs.querySelectorAll('.browser-tab')]
     .filter((candidate) => candidate !== state.tab)
     .reduce((index, candidate) => {
-      const center = tabsLeft + candidate.offsetLeft + candidate.offsetWidth / 2;
+      const center = tabsLeft + candidate.offsetLeft - tabs.scrollLeft + candidate.offsetWidth / 2;
       return index + (event.clientX >= center ? 1 : 0);
     }, 0);
-  const boundedTarget = Math.max(0, Math.min(tabItems.length - 1, targetIndex));
+    const pinnedCount = tabItems.filter((item) => item.pinned).length;
+    const dragged = tabItems.find((item) => item.id === state.itemId);
+    const boundedTarget = dragged?.pinned
+      ? Math.max(0, Math.min(pinnedCount - 1, targetIndex))
+      : Math.max(pinnedCount, Math.min(tabItems.length - 1, targetIndex));
   if (boundedTarget === state.targetIndex) return;
   state.targetIndex = boundedTarget;
   applyTabDragShifts(state);
@@ -2455,12 +2796,12 @@ function renderTabs() {
   if (activeSurface && activeSurface.parentElement !== tabs) tabs.prepend(activeSurface);
   tabs.textContent = '';
   if (activeSurface) tabs.append(activeSurface);
-  const preferredWidth = tabItems.length * TAB_BASE_WIDTH + Math.max(0, tabItems.length - 1) * TAB_GAP;
-  tabs.style.width = `${preferredWidth}px`;
+  tabs.style.removeProperty('width');
   for (const item of tabItems) {
     const tab = document.createElement('button');
     tab.type = 'button';
-    tab.className = `browser-tab${item.id === activeTabId ? ' is-active' : ''}`;
+    tab.className = `browser-tab${item.id === activeTabId ? ' is-active' : ''}${item.pinned ? ' is-pinned' : ''}${item.loading ? ' is-loading' : ''}`;
+    tab.tabIndex = item.id === activeTabId ? 0 : -1;
     tab.setAttribute('role', 'tab');
     tab.setAttribute('aria-selected', item.id === activeTabId ? 'true' : 'false');
     tab.dataset.tabId = item.id;
@@ -2488,12 +2829,24 @@ function renderTabs() {
       closeTab(item.id);
     });
     tab.append(icon, label, close);
+    if (item.audible || item.muted) {
+      const sound = createShellIcon(item.muted ? 'shell-icon-muted' : 'shell-icon-volume', 'shell-icon tab-sound');
+      sound.setAttribute('aria-label', item.muted ? '网站已静音' : '正在播放声音');
+      tab.append(sound);
+    }
+    tab.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      const index = tabItems.indexOf(item);
+      void window.shellApi?.showTabMenu?.({ tabId: item.id, pinned: item.pinned, muted: item.muted,
+        canMute: Boolean(tabSiteHost(item)), hasOthers: tabItems.some((entry) => entry !== item && !entry.pinned),
+        hasRight: tabItems.slice(index + 1).some((entry) => !entry.pinned) });
+    });
     tab.addEventListener('click', () => {
       if (suppressedTabClickId === item.id) {
         suppressedTabClickId = '';
         return;
       }
-      activateTab(item.id);
+      activateTab(item.id, item.isNewTab);
     });
     tab.addEventListener('pointerdown', (event) => beginTabDrag(event, item, tab));
     tab.addEventListener('dragstart', (event) => event.preventDefault());
@@ -2690,6 +3043,7 @@ async function showPasswordSavePrompt(item, input) {
 function activateTab(tabId, focusAddress = false) {
   const item = tabItems.find((candidate) => candidate.id === tabId);
   if (!item) return;
+  if (activeTabId !== item.id) closePageFind(false);
   if (passwordPromptState && passwordPromptState.itemId !== item.id) hidePasswordSavePrompt();
   activeTabId = item.id;
   if (item.isNewTab && !item.agentView) item.agentView = createNewTabAgentView(item);
@@ -2708,10 +3062,14 @@ function activateTab(tabId, focusAddress = false) {
   syncAgentContext();
   renderBookmarkToggle();
   renderBookmarkBar();
+  syncNavigationControls();
   document.title = `${item.title} · ${profileName} · ${brandName}`;
   if (focusAddress) {
     address.focus();
     address.select();
+  } else if (!isShellPage(item)) {
+    if (item.domReady) item.view?.focus();
+    else item.focusOnReady = true;
   }
 }
 
@@ -2816,10 +3174,13 @@ function bindTabEvents(item) {
     if (item.id !== activeTabId) return;
     finishAddressEditing();
     hideAddressSuggestions();
+    dismissBrowserPopovers();
   });
   view.addEventListener('dom-ready', () => {
     item.domReady = true;
+    syncTabAudio(item);
     if (item.id === activeTabId) {
+      if (item.focusOnReady) { item.focusOnReady = false; view.focus(); }
       syncGuestZoomFactor(view);
       syncAddress();
     }
@@ -2837,16 +3198,18 @@ function bindTabEvents(item) {
     }
   });
   view.addEventListener('did-start-loading', () => {
+    item.loading = true;
+    closePageFindFor(item);
     item.loadTimedOut = false;
     item.domReady = false;
     clearTabFavicon(item);
     resetPageDominantColor(item);
     item.accentSource = '';
     renderTabs();
+    if (item.id === activeTabId) syncNavigationControls();
     schedulePageLoadTimeout(item);
     if (item.id !== activeTabId) return;
     lastPageTitle = '';
-    loading.hidden = false;
     setShellStatus('加载中', 'busy');
   });
   view.addEventListener('did-frame-finish-load', (event) => {
@@ -2865,6 +3228,7 @@ function bindTabEvents(item) {
   });
   view.addEventListener('did-navigate', (event) => {
     item.url = event.url || item.url;
+    syncTabAudio(item);
     resetPageDominantColor(item);
     item.accentSource = '';
     item.title = item.title === '新标签页' ? tabFallbackTitle(item.url) : item.title;
@@ -2874,15 +3238,17 @@ function bindTabEvents(item) {
     if (item.id !== activeTabId) return;
     lastPageTitle = '';
     syncAddress();
+    syncNavigationControls();
     syncAgentContext();
   });
   view.addEventListener('did-navigate-in-page', (event) => {
     if (event.isMainFrame === false) return;
     item.url = event.url || item.url;
+    syncTabAudio(item);
     resetPageDominantColor(item);
     renderTabs();
     void refreshPageDominantColor(item);
-    if (item.id === activeTabId) syncAddress();
+    if (item.id === activeTabId) { syncAddress(); syncNavigationControls(); }
   });
   view.addEventListener('page-title-updated', (event) => {
     if (event.title) item.title = event.title.slice(0, 120);
@@ -2911,6 +3277,8 @@ function bindTabEvents(item) {
     if (item.favicon) void saveBookmarkFavicon(item.url, item.favicon);
   });
   view.addEventListener('did-fail-load', (event) => {
+    item.loading = false;
+    if (item.id === activeTabId) syncNavigationControls();
     clearPageLoadTimer(item);
     if (item.loadTimedOut) {
       item.loadTimedOut = false;
@@ -2922,6 +3290,8 @@ function bindTabEvents(item) {
     syncAgentContext();
   });
   view.addEventListener('render-process-gone', (event) => {
+    item.loading = false;
+    if (item.id === activeTabId) syncNavigationControls();
     clearPageLoadTimer(item);
     item.loadTimedOut = false;
     if (item.id !== activeTabId) return;
@@ -2929,6 +3299,12 @@ function bindTabEvents(item) {
     setShellStatus(`页面进程退出：${event.details?.reason || '未知原因'}`, 'error');
     syncAgentContext();
   });
+  for (const name of ['media-started-playing', 'media-paused']) {
+    view.addEventListener(name, () => {
+      try { item.audible = view.isCurrentlyAudible(); } catch { item.audible = false; }
+      renderTabs();
+    });
+  }
 }
 
 function clearPageLoadTimer(item) {
@@ -2941,6 +3317,7 @@ function schedulePageLoadTimeout(item) {
   clearPageLoadTimer(item);
   item.loadTimer = window.setTimeout(() => {
     item.loadTimer = null;
+    item.loading = false;
     if (item.loadTimedOut) return;
     let isLoading = true;
     try {
@@ -2955,17 +3332,21 @@ function schedulePageLoadTimeout(item) {
     }
     if (item.id !== activeTabId) return;
     loading.hidden = true;
+    syncNavigationControls();
     setShellStatus('加载超时：代理或目标站点无响应', 'error');
     syncAgentContext();
   }, PAGE_LOAD_TIMEOUT_MS);
 }
 
 function markPageLoadReady(item) {
+  item.loading = false;
+  renderTabs();
   clearPageLoadTimer(item);
   updateActiveTabUrlFor(item);
   recordNavigation(item.url, item.title);
   if (item.id !== activeTabId) return;
   loading.hidden = true;
+  syncNavigationControls();
   setShellStatus('就绪');
   syncAddress();
   syncAgentContext();
@@ -2980,7 +3361,55 @@ function updateActiveTabUrlFor(item) {
   }
 }
 
-function createTab(url = 'about:newtab', focusAddress = false) {
+function tabSiteHost(item) {
+  try { const url = new URL(item.url); return ['http:', 'https:'].includes(url.protocol) ? url.hostname : ''; } catch { return ''; }
+}
+
+function syncTabAudio(item) {
+  item.muted = mutedSiteHosts.has(tabSiteHost(item));
+  try { item.view?.setAudioMuted(item.muted); } catch { /* The guest is not ready yet. */ }
+}
+
+function restoreClosedTab(closedId) {
+  const index = closedId ? recentlyClosedTabs.findIndex((item) => item.id === closedId) : 0;
+  if (index < 0 || !recentlyClosedTabs[index]) return;
+  const [closed] = recentlyClosedTabs.splice(index, 1);
+  const item = createTab(closed.url, { index: closed.index, pinned: closed.pinned });
+  if (!item) { recentlyClosedTabs.splice(index, 0, closed); return; }
+  item.title = closed.title;
+  item.favicon = closed.favicon;
+  item.accent = closed.accent;
+  renderTabs();
+}
+
+function runTabAction(tabId, command) {
+  const item = tabItems.find((entry) => entry.id === tabId);
+  if (!item) return;
+  const index = tabItems.indexOf(item);
+  if (command === 'new-right') createTab('about:newtab', { index: index + 1 });
+  else if (command === 'reload') {
+    if (isShellPage(item)) { if (item.isHistory) renderHistoryPage(item); else void refreshNewTabPage(item); }
+    else item.view?.reload();
+  } else if (command === 'duplicate') createTab(item.url, { index: index + 1, pinned: item.pinned });
+  else if (command === 'pin') {
+    tabItems.splice(index, 1);
+    item.pinned = !item.pinned;
+    tabItems.splice(tabItems.filter((entry) => entry.pinned).length, 0, item);
+    renderTabs();
+  } else if (command === 'mute') {
+    const host = tabSiteHost(item);
+    if (!host) return;
+    if (mutedSiteHosts.has(host)) mutedSiteHosts.delete(host); else mutedSiteHosts.add(host);
+    for (const entry of tabItems) syncTabAudio(entry);
+    renderTabs();
+  } else if (command === 'close') closeTab(tabId);
+  else if (command === 'close-others' || command === 'close-right') {
+    const targets = tabItems.filter((entry, position) => entry !== item && !entry.pinned && (command === 'close-others' || position > index));
+    for (const target of targets.reverse()) closeTab(target.id);
+  }
+}
+
+function createTab(url = 'about:newtab', options = {}) {
   if (!pages) return null;
   const normalized = normalizedUrl(url);
   const item = {
@@ -3001,6 +3430,11 @@ function createTab(url = 'about:newtab', focusAddress = false) {
     pageColorGeneration: 0,
     isNewTab: isNewTabUrl(normalized),
     isHistory: isHistoryUrl(normalized),
+    pinned: options.pinned === true,
+    loading: false,
+    muted: false,
+    audible: false,
+    findQuery: '',
     view: null,
     newTabView: null,
     agentView: null,
@@ -3022,12 +3456,18 @@ function createTab(url = 'about:newtab', focusAddress = false) {
     item.view.setAttribute('partition', partition);
     item.view.setAttribute('allowpopups', '');
     item.view.setAttribute('aria-label', item.title);
+    item.view.hidden = options.activate === false;
     pages.append(item.view);
     bindTabEvents(item);
     item.view.setAttribute('src', item.url);
   }
-  tabItems.push(item);
-  activateTab(item.id, focusAddress);
+  const pinnedCount = tabItems.filter((entry) => entry.pinned).length;
+  const requestedIndex = Number.isInteger(options.index) ? options.index : tabItems.length;
+  const insertIndex = item.pinned ? Math.min(pinnedCount, Math.max(0, requestedIndex))
+    : Math.max(pinnedCount, Math.min(tabItems.length, requestedIndex));
+  tabItems.splice(insertIndex, 0, item);
+  if (options.activate !== false) activateTab(item.id, options.focusAddress ?? item.isNewTab);
+  else { if (item.newTabView) item.newTabView.hidden = true; renderTabs(); }
   return item;
 }
 
@@ -3054,7 +3494,11 @@ function resetTabToNewTab(item) {
   if (!item) return;
   if (passwordPromptState?.itemId === item.id) hidePasswordSavePrompt();
   clearPageLoadTimer(item);
-  try { item.view?.stop?.(); } catch {}
+  closePageFindFor(item);
+  item.loading = false;
+  item.pinned = false;
+  item.audible = false;
+  item.muted = false;
   item.view?.remove?.();
   item.view = null;
   item.newTabView?.remove?.();
@@ -3087,12 +3531,12 @@ function closeTab(tabId) {
   }
   const wasActive = activeTabId === tabId;
   const [removed] = tabItems.splice(index, 1);
+  closePageFindFor(removed);
   clearPageLoadTimer(removed);
-  try { removed.view?.stop?.(); } catch {}
   removed.view?.remove?.();
   removed.newTabView?.remove?.();
   if (wasActive) {
-    const next = tabItems[Math.max(0, index - 1)];
+    const next = tabItems[Math.min(index, tabItems.length - 1)];
     activateTab(next.id);
   } else {
     renderTabs();
@@ -3135,7 +3579,7 @@ function agentTabFor(tabId) {
 
 function agentOpenTab(input = {}) {
   const url = normalizedUrl(input.url || 'about:newtab');
-  const item = createTab(url, input.focus !== false);
+  const item = createTab(url, { activate: input.focus !== false });
   if (!item) throw new Error('无法创建新标签页');
   return { ok: true, type: 'open-tab', tab: agentTabSnapshot(item), tabs: agentTabsSnapshot().tabs };
 }
@@ -3221,6 +3665,108 @@ function cycleTab(direction) {
   activateTab(tabItems[nextIndex].id);
 }
 
+function syncNavigationControls() {
+  const item = activeTab();
+  const view = isShellPage(item) ? null : item?.view;
+  let canBack = false;
+  let canForward = false;
+  try { canBack = view?.canGoBack() === true; canForward = view?.canGoForward() === true; } catch {}
+  if (backButton) backButton.disabled = !canBack;
+  if (forwardButton) forwardButton.disabled = !canForward;
+  if (reloadButton) {
+    const busy = item?.loading === true;
+    reloadButton.title = busy ? '停止加载' : '刷新';
+    reloadButton.setAttribute('aria-label', busy ? '停止加载' : '刷新');
+    reloadButton.querySelector('use')?.setAttribute('href', busy ? '#shell-icon-close' : '#shell-icon-refresh');
+  }
+  if (loading) loading.hidden = true;
+}
+
+function closePageFindFor(item) {
+  if (!item) return;
+  const hadRequest = Boolean(item.findToken);
+  item.findToken = 0;
+  if (hadRequest && item.domReady && item.view) {
+    try { void window.shellApi?.findPage?.({ webContentsId: item.view.getWebContentsId(), query: '' }).catch(() => {}); } catch {}
+  }
+  if (item.id === activeTabId && pageFind) pageFind.hidden = true;
+}
+
+function closePageFind(focusPage = true) {
+  closePageFindFor(activeTab());
+  if (focusPage) activeTab()?.view?.focus();
+}
+
+function openPageFind() {
+  const item = activeTab();
+  if (!item || !pageFind) return;
+  if (isShellPage(item)) {
+    item.newTabView?.querySelector('input[type="search"], input')?.focus();
+    return;
+  }
+  pageFind.hidden = false;
+  pageFindInput.value = item.findQuery || '';
+  pageFindCount.textContent = '0/0';
+  pageFindInput.focus();
+  pageFindInput.select();
+  if (item.findQuery) runPageFind(true, true);
+}
+
+async function runPageFind(forward = true, newSession = false) {
+  const item = activeTab();
+  if (!item?.view || isShellPage(item)) return;
+  const query = pageFindInput.value;
+  const changed = query !== item.findQuery;
+  item.findQuery = query;
+  item.findToken = ++nextFindToken;
+  const token = item.findToken;
+  if (!query) pageFindCount.textContent = '0/0';
+  try {
+    const result = await window.shellApi?.findPage?.({ webContentsId: item.view.getWebContentsId(), query, token, forward, findNext: changed || newSession });
+    if (item.findToken === token && result?.ok === false) pageFindCount.textContent = '0/0';
+  } catch { if (item.findToken === token) pageFindCount.textContent = '0/0'; }
+}
+
+function runBrowserShortcut(command) {
+  const item = activeTab();
+  if (command === 'new-tab') createTab('about:newtab');
+  else if (command === 'dismiss-popovers') dismissBrowserPopovers();
+  else if (command === 'restore-closed-tab') restoreClosedTab();
+  else if (command === 'close-tab') closeTab(activeTabId);
+  else if (command === 'next-tab' || command === 'previous-tab') cycleTab(command === 'next-tab' ? 1 : -1);
+  else if (command.startsWith('activate-tab-')) {
+    const target = tabItems[Number(command.slice('activate-tab-'.length)) - 1];
+    if (target) activateTab(target.id);
+  } else if (command === 'activate-last-tab' && tabItems.length) activateTab(tabItems.at(-1).id);
+  else if (command === 'focus-address') { address.focus(); address.select(); }
+  else if (command === 'find') openPageFind();
+  else if (command === 'find-next' || command === 'find-previous') {
+    if (pageFind?.hidden) openPageFind(); else runPageFind(command === 'find-next');
+  } else if (command === 'history') openHistoryPage();
+  else if (command === 'clear-data') void runBrowserCommand('clear-data');
+  else if (command === 'downloads') { if (downloadsPanel?.hidden) downloadsToggle?.click(); }
+  else if (command === 'toggle-bookmark-bar') void toggleBookmarkBar();
+  else if (command === 'toggle-tab-switcher') toggleTabSwitcher();
+  else if (command === 'reload') reloadActivePage();
+  else if (command === 'reload-ignoring-cache') {
+    if (isShellPage(item)) reloadActivePage(); else item?.view?.reloadIgnoringCache();
+  } else if (command === 'back' && !backButton?.disabled) item?.view?.goBack();
+  else if (command === 'forward' && !forwardButton?.disabled) item?.view?.goForward();
+  else if (command === 'bookmark') void toggleBookmark();
+  else if (command === 'print') item?.view?.print?.({});
+  else if (command === 'fullscreen') void window.shellApi?.toggleFullscreen?.();
+  else if (command === 'zoom-reset') shellInterfaceZoom?.reset();
+  else if (command === 'zoom-in' || command === 'zoom-out') shellInterfaceZoom?.step(command === 'zoom-in' ? 1 : -1);
+  else if (command === 'escape') {
+    if (pageFind?.hidden === false) closePageFind();
+    else if (downloadsPanel?.hidden === false) { downloadsPanel.hidden = true; downloadsToggle?.setAttribute('aria-expanded', 'false'); }
+    else if (extensionsPanel?.hidden === false) { extensionsPanel.hidden = true; extensionsToggle?.setAttribute('aria-expanded', 'false'); }
+    else if (browserMoreMenu?.hidden === false) closeBrowserMoreMenu();
+    else if (browserSettingsPanel?.hidden === false) setBrowserSettingsOpen(false);
+    else if (item?.loading) { item.view?.stop(); item.loading = false; syncNavigationControls(); renderTabs(); }
+  }
+}
+
 function syncAddress() {
   if (tornDown || !address) return;
   const item = activeTab();
@@ -3268,7 +3814,8 @@ function navigateAddress(value, template) {
     });
   }
   if (item.id === activeTabId) {
-    loading.hidden = false;
+    item.loading = true;
+    syncNavigationControls();
     setShellStatus('加载中', 'busy');
     renderBookmarkBar();
   }
@@ -3479,11 +4026,11 @@ async function stopLocalListener(index, button) {
 async function handleDownloadAction(action, downloadId) {
   if (!downloadId || !window.shellApi) return;
   try {
-    const result = action === 'cancel'
-      ? await window.shellApi.cancelDownload(downloadId)
-      : await window.shellApi.openDownload({ id: downloadId, action });
+    const result = action === 'cancel' ? await window.shellApi.cancelDownload(downloadId)
+      : action === 'pause' || action === 'resume' ? await window.shellApi.controlDownload({ id: downloadId, action })
+        : await window.shellApi.openDownload({ id: downloadId, action });
     if (result?.ok === false) throw new Error(result.error || '下载操作失败');
-    if (action === 'cancel') await refreshDownloads();
+    if (['cancel', 'pause', 'resume'].includes(action)) await refreshDownloads();
   } catch (error) {
     setShellStatus(`下载操作失败：${error.message || '未知错误'}`, 'error');
   }
@@ -3823,7 +4370,7 @@ function renderBrowserSettings(nextSettings) {
     ...(nextSettings && typeof nextSettings === 'object' ? nextSettings : {}),
   };
   browserSettings.newTabDisplayMode = normalizeNewTabDisplayMode(browserSettings.newTabDisplayMode);
-  browserSettings.jevAutoJudgeEnabled = browserSettings.jevAutoJudgeEnabled !== false;
+  pruneRemovedNewTabSiteFavicons();
   applySharedTheme(browserSettings.theme);
   searchEngineUrl = String(browserSettings.searchEngineUrl || DEFAULT_SEARCH_ENGINE_URL);
   searchEngines = Array.isArray(browserSettings.searchEngines) && browserSettings.searchEngines.length
@@ -3878,7 +4425,6 @@ function setBrowserSettingsOpen(nextOpen) {
   browserSettingsToggle?.setAttribute('aria-expanded', open ? 'true' : 'false');
   if (open) {
     closeLocalListeners();
-    setAgentOpen(false);
     if (extensionsPanel) extensionsPanel.hidden = true;
     extensionsToggle?.setAttribute('aria-expanded', 'false');
     void refreshBrowserSettings();
@@ -4006,7 +4552,6 @@ function renderAgentSettings(nextSettings = browserSettings) {
   if (agentBaseUrlInput && document.activeElement !== agentBaseUrlInput) agentBaseUrlInput.value = String(settings.agentBaseUrl || settings.agentApiUrl || '');
   if (agentModelInput && document.activeElement !== agentModelInput) agentModelInput.value = String(settings.agentModel || settings.agentApi || '');
   if (agentTokenInput && document.activeElement !== agentTokenInput) agentTokenInput.value = '';
-  if (agentJevEnabledInput && document.activeElement !== agentJevEnabledInput) agentJevEnabledInput.checked = settings.jevAutoJudgeEnabled !== false;
   if (agentContextInput && document.activeElement !== agentContextInput) agentContextInput.value = String(settings.agentContextBudgetTokens ?? 200000);
   if (agentOutputInput && document.activeElement !== agentOutputInput) agentOutputInput.value = String(settings.agentMaxOutputTokens ?? 8192);
   if (agentReasoningInput && document.activeElement !== agentReasoningInput) agentReasoningInput.value = String(settings.agentReasoningEffort ?? 'medium');
@@ -4232,7 +4777,6 @@ async function saveAgentSettings(event) {
     agentReasoningEffort: agentReasoningInput?.value || 'medium',
     agentTemperature: agentTemperatureInput?.value === '' ? null : agentTemperatureInput?.value,
     agentMaxSteps: agentStepsInput?.value || '0',
-    jevAutoJudgeEnabled: agentJevEnabledInput?.checked === true,
   };
   const token = agentTokenInput?.value.trim() || '';
   if (token || clearAgentTokenRequested) {
@@ -4315,8 +4859,6 @@ const AGENT_TOOL_LABELS = Object.freeze({
   browser_drag: '拖拽页面元素',
   browser_wait: '等待页面响应',
   browser_configure_shortcuts: '更新浏览器快捷键',
-  jev_decide: '整理判断结果',
-  agent_jev_completion: '判断网页任务完成状态',
 });
 
 function agentToolLabel(name, rawArguments) {
@@ -4486,6 +5028,19 @@ function appendAgentMessage(text, role = 'assistant', options = {}) {
   if (options.error) bubble.classList.add('agent-error');
   if (text) bubble.textContent = text;
 
+  if (Array.isArray(options.images) && options.images.length) {
+    const images = document.createElement('div');
+    images.className = 'agent-message-images';
+    for (const [index, image] of options.images.entries()) {
+      if (!image?.dataUrl) continue;
+      const preview = document.createElement('img');
+      preview.src = image.dataUrl;
+      preview.alt = image.name || `消息图片 ${index + 1}`;
+      images.append(preview);
+    }
+    if (images.childElementCount) bubble.append(images);
+  }
+
   if (Object.prototype.hasOwnProperty.call(options, 'result')) {
     const formatted = formatAgentValue(options.result);
     const result = document.createElement('div');
@@ -4511,6 +5066,64 @@ function appendAgentMessage(text, role = 'assistant', options = {}) {
   row.append(bubble);
   agentTranscript.append(row);
   agentTranscript.scrollTop = agentTranscript.scrollHeight;
+}
+
+function setAgentComposerAttachmentStatus(message, isError = false) {
+  if (!agentComposerAttachmentStatus) return;
+  agentComposerAttachmentStatus.textContent = message || '';
+  agentComposerAttachmentStatus.hidden = !message;
+  agentComposerAttachmentStatus.classList.toggle('is-error', Boolean(isError));
+}
+
+function renderAgentComposerImages() {
+  if (!agentComposerAttachments) return;
+  agentComposerAttachments.hidden = agentComposerImages.length === 0;
+  agentComposerAttachments.replaceChildren(...agentComposerImages.map((image, index) => {
+    const item = document.createElement('div');
+    item.className = 'agent-composer-attachment';
+    const preview = document.createElement('img');
+    preview.src = image.dataUrl;
+    preview.alt = image.name || `待发送图片 ${index + 1}`;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'agent-composer-attachment-remove';
+    remove.dataset.removeAgentImage = String(image.id);
+    remove.title = `移除图片 ${index + 1}`;
+    remove.setAttribute('aria-label', `移除图片 ${index + 1}`);
+    remove.innerHTML = '<svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-close"></use></svg>';
+    item.append(preview, remove);
+    return item;
+  }));
+}
+
+function readAgentClipboardImage(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !String(file.type || '').toLowerCase().startsWith('image/')) {
+      reject(new Error('剪贴板内容不是受支持的图片'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.addEventListener('load', () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+      if (!dataUrl.startsWith('data:image/')) {
+        reject(new Error('无法读取剪贴板图片'));
+      } else if (dataUrl.length > AGENT_IMAGE_DATA_URL_LIMIT) {
+        reject(new Error('图片超过 10,000,000 字符上限'));
+      } else {
+        resolve({ id: nextAgentComposerImageId++, dataUrl, name: file.name || '' });
+      }
+    });
+    reader.addEventListener('error', () => reject(new Error('读取剪贴板图片失败')));
+    reader.readAsDataURL(file);
+  });
+}
+
+function insertAgentComposerText(text) {
+  if (!agentComposer || !text) return;
+  const start = agentComposer.selectionStart ?? agentComposer.value.length;
+  const end = agentComposer.selectionEnd ?? start;
+  agentComposer.setRangeText(text, start, end, 'end');
+  agentComposer.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 function humanVerificationScript() {
@@ -5162,7 +5775,6 @@ function agentContextUsagePercent() {
 
 function showAgentContextNotice(message) {
   if (!agentContextUsage) return;
-  agentContextUsage.title = message;
   agentContextUsage.classList.remove('is-notice');
   void agentContextUsage.offsetWidth;
   agentContextUsage.classList.add('is-notice');
@@ -5179,9 +5791,13 @@ function renderAgentContextUsage() {
   const percent = agentContextUsagePercent();
   const usedTokens = estimateAgentContextTokens(agentConversation);
   const budgetTokens = Number(browserSettings.agentContextBudgetTokens);
-  const tokenUsage = Number.isFinite(budgetTokens) && budgetTokens > 0
-    ? `${agentContextUsageUtils.formatTokenCount(usedTokens, 1)} / ${agentContextUsageUtils.formatTokenCount(budgetTokens)}`
-    : `${agentContextUsageUtils.formatTokenCount(usedTokens, 1)} / 未设置`;
+  const budgetFractionDigits = budgetTokens >= 1_000_000 ? 1 : 0;
+  const usedDisplay = agentContextUsageUtils.formatTokenCount(usedTokens, 1);
+  const budgetDisplay = Number.isFinite(budgetTokens) && budgetTokens > 0
+    ? agentContextUsageUtils.formatTokenCount(budgetTokens, budgetFractionDigits)
+    : '未设置';
+  const tokenUsage = `${usedDisplay} / ${budgetDisplay}`;
+  const remainingPercent = Math.max(0, 100 - percent);
   agentContextUsage.textContent = `${percent}%`;
   agentContextUsage.dataset.percent = `${percent}%`;
   const angle = Math.round(percent * 3.6);
@@ -5190,7 +5806,12 @@ function renderAgentContextUsage() {
   agentContextUsage.style.setProperty('--agent-context-angle', `${angle}deg`);
   agentContextUsage.dataset.level = percent >= 90 ? 'critical' : percent >= 75 ? 'warning' : 'normal';
   agentContextUsage.setAttribute('aria-label', `上下文使用量 ${tokenUsage}，${percent}%，点击压缩`);
-  agentContextUsage.title = `上下文使用量 ${tokenUsage}（${percent}%），点击压缩`;
+  if (agentContextTooltipPercent) agentContextTooltipPercent.textContent = `${percent}% 已用（剩余 ${remainingPercent}%）`;
+  if (agentContextTooltipTokens) {
+    agentContextTooltipTokens.textContent = Number.isFinite(budgetTokens) && budgetTokens > 0
+      ? `已用 ${usedDisplay} 标记，共 ${budgetDisplay}`
+      : `已用 ${usedDisplay} 标记，预算未设置`;
+  }
 }
 
 function compressAgentConversationIfNeeded(force = false) {
@@ -5283,7 +5904,6 @@ function isSafeNotStartedError(error) {
 }
 
 function isRetryableToolError(name, error) {
-  if (name === 'jev_decide') return isTransientAgentError(error);
   if (RETRY_SAFE_READ_TOOLS.has(name)) return isTransientAgentError(error) || error?.toolResult?.ok === false;
   if (isSafeNotStartedError(error)) return true;
   if (!error?.toolResult || error.toolResult.ok !== false) return false;
@@ -5357,66 +5977,6 @@ function summarizeAgentAction(item) {
   };
 }
 
-async function judgeAgentCompletion({ goal, actions, earlierActionCount, responseText, runId, signal }) {
-  const actionView = appendAgentAction('agent_jev_completion', '判断中');
-  try {
-    const observation = await retryAgentRequest(
-      () => executeAgentProtocolAction({ type: 'screenshot', includeText: true, includeScreenshot: false }, signal),
-      signal,
-      runId,
-      '页面观察',
-    );
-    const state = {
-      goal: String(goal || '').slice(0, 12000),
-      latestResponse: String(responseText || '').slice(0, 4000),
-      actions: Array.isArray(actions) ? actions : [],
-      earlierActionCount: Math.max(0, Number(earlierActionCount) || 0),
-      page: summarizeAgentObservation(observation),
-    };
-    const result = await retryAgentRequest(
-      () => executeModelTool('jev_decide', {
-        state,
-        questions: {
-          completed: '用户的网页任务是否已经全部完成？只给出 true 或 false。',
-          confidence: '你对 completed 判断的置信度是多少？请给出 0 到 1 之间的数字。',
-          reason: '用一句简短的话说明判断依据。',
-        },
-      }, signal),
-      signal,
-      runId,
-      'JEV 判断',
-    );
-    if (result?.ok === false) throw new Error(result.error || 'JEV 判断失败');
-    const judgment = agentCompletion.normalizeJevCompletion(result);
-    const confidence = agentCompletion.confidenceLabel(judgment);
-    const summary = {
-      taskStatus: judgment.completed ? '已完成' : '未完成',
-      confidence,
-      reason: judgment.reason || 'JEV 未提供判断理由',
-    };
-    actionView?.setState(`${summary.taskStatus} · 置信度 ${summary.confidence}`, { result: summary, resultLabel: 'JEV 判断' });
-    return judgment;
-  } catch (error) {
-    const cancelled = signal?.aborted || agentStopRequested;
-    actionView?.setState(cancelled ? '已取消' : '无法判断', {
-      error: !cancelled,
-      result: { error: cancelled ? '用户已停止判断' : error?.message || 'JEV 判断失败' },
-    });
-    throw error;
-  }
-}
-
-function appendJevContinuation(judgment) {
-  const status = judgment.completed ? '已完成' : '未完成';
-  const confidence = agentCompletion.confidenceLabel(judgment);
-  agentConversation.push({
-    role: 'user',
-    content: `JEV 完成判断：${status}；置信度：${confidence}；依据：${judgment.reason || '未提供'}。${judgment.completed
-      ? '请根据已有动作结果向用户给出简洁的最终总结，不要再调用工具。'
-      : '任务还未完成。根据上述判断和页面结果继续执行，直到任务完成或达到工具步数上限。'}`,
-  });
-}
-
 async function configureBrowserControls(args) {
   if (!window.shellApi?.saveSettings) throw new Error('浏览器设置暂不可用');
   const payload = {};
@@ -5458,24 +6018,6 @@ async function executeModelTool(name, rawArguments, signal = null) {
   switch (String(name || '').trim()) {
     case 'browser_observe':
       return executeAgentProtocolAction({ type: 'screenshot', includeText: true, includeScreenshot: true }, signal);
-    case 'jev_decide': {
-      if (browserSettings.jevAutoJudgeEnabled === false) throw new Error('JEV 模型未启用');
-      if (!window.shellApi?.jevDecision) throw new Error('JEV 判断接口暂不可用');
-      let requestId = '';
-      const cancelRequest = () => window.shellApi.cancelAgentRequest?.(requestId);
-      agentRequestCancel = cancelRequest;
-      try {
-        const result = await window.shellApi.jevDecision(
-          { state: args.state, questions: args.questions },
-          (id) => { requestId = String(id || ''); },
-        );
-        assertAgentActionActive(signal);
-        if (result?.ok === false) throw new Error(result.error || 'JEV 判断失败');
-        return result;
-      } finally {
-        if (agentRequestCancel === cancelRequest) agentRequestCancel = null;
-      }
-    }
     case 'browser_read_page':
       return executePageScript(pageReadScript(), { type: 'read' });
     case 'browser_collect_links':
@@ -5559,31 +6101,14 @@ function ensureAgentSystemMessage() {
   if (agentConversation.some((message) => message.role === 'system')) return;
   agentConversation.unshift({
     role: 'system',
-    content: '你是网页助手，也是自然的聊天伙伴。对于闲聊、解释、写作或一般问题，直接用简洁中文回答，不要为了回复而调用工具，也不要把每句话都改写成任务。只有用户需要了解或操作当前网页时，才在当前 profile 浏览器内使用标签页、导航、页面读取、选择器、坐标鼠标、滚轮、拖拽、键盘和文本输入工具；不要操作浏览器之外的操作系统窗口。需要本地文件时，先调用 browser_choose_files 或 browser_choose_folder，让用户在系统选择器中明确授权；再用返回的授权 ID 列出、读取或上传，不能猜测或索取未授权路径。上传前先观察页面并用 browser_upload_files 匹配 input[type=file] 控件。需要坐标时使用观察结果中的 CSS 像素坐标，坐标点击会模拟鼠标移动、按压和抬起，可用于按钮、画布及页面任意位置；优先观察再行动。网页任务每批动作后都会由 JEV 判断是否完成；未完成时继续操作，完成后停止网页动作并用清楚的中文总结结果。不要索取或输出 Token、Cookie、密码等敏感信息。用户要求配置刷新、开发者工具快捷键或鼠标手势时，使用 browser_configure_shortcuts 工具，只提交用户明确要求的字段。需要结构化判断时可以使用 jev_decide；它只返回判断结果，不执行浏览器动作。humanVerification.required 只是页面状态提示，不会代替你识别或提交验证；按用户指令继续使用普通网页动作，并在无法完成时如实说明。',
+    content: '你是网页助手，也是自然的聊天伙伴。对于闲聊、解释、写作或一般问题，直接用简洁中文回答，不要为了回复而调用工具，也不要把每句话都改写成任务。只有用户需要了解或操作当前网页时，才在当前 profile 浏览器内使用标签页、导航、页面读取、选择器、坐标鼠标、滚轮、拖拽、键盘和文本输入工具；不要操作浏览器之外的操作系统窗口。需要本地文件时，先调用 browser_choose_files 或 browser_choose_folder，让用户在系统选择器中明确授权；再用返回的授权 ID 列出、读取或上传，不能猜测或索取未授权路径。上传前先观察页面并用 browser_upload_files 匹配 input[type=file] 控件。不要索取或输出 Token、Cookie、密码等敏感信息。用户要求配置刷新、开发者工具快捷键或鼠标手势时，使用 browser_configure_shortcuts 工具，只提交用户明确要求的字段。humanVerification.required 只是页面状态提示，不会代替你识别或提交验证；按用户指令继续使用普通网页动作，并在无法完成时如实说明。',
   });
 }
 
-function syncAgentJevInstructions() {
-  const systemMessage = agentConversation.find((message) => message.role === 'system');
-  if (!systemMessage) return;
-  const enabledInstruction = '网页任务每批动作后都会由 JEV 判断是否完成；未完成时继续操作，完成时停止网页动作并用清楚的中文总结结果。';
-  const disabledInstruction = '网页任务完成后，根据操作结果向用户清楚总结，不要声称未经验证的结果已确认。';
-  const toolInstruction = '需要结构化判断时可以使用 jev_decide；它只返回判断结果，不执行浏览器动作。';
-  if (browserSettings.jevAutoJudgeEnabled === false) {
-    systemMessage.content = systemMessage.content
-      .replace(enabledInstruction, disabledInstruction)
-      .replace(toolInstruction, '');
-    return;
-  }
-  systemMessage.content = systemMessage.content.replace(disabledInstruction, enabledInstruction);
-  if (!systemMessage.content.includes(toolInstruction)) {
-    systemMessage.content = systemMessage.content.replace('不要索取或输出 Token、Cookie、密码等敏感信息。', `${toolInstruction}不要索取或输出 Token、Cookie、密码等敏感信息。`);
-  }
-}
-
-async function runModelAgent(userText, { showUser = true } = {}) {
+async function runModelAgent(userText, { showUser = true, images = [] } = {}) {
+  const userImages = Array.isArray(images) ? images : [];
   const hint = agentModelSetupHint();
-  if (showUser) appendAgentMessage(userText, 'user');
+  if (showUser) appendAgentMessage(userText || (userImages.length ? '已发送图片' : ''), 'user', { images: userImages });
   renderAgentContextUsage();
   if (hint) {
     appendAgentMessage(hint, 'assistant', { error: true });
@@ -5598,9 +6123,7 @@ async function runModelAgent(userText, { showUser = true } = {}) {
   setAgentBusy(true);
   startAgentTaskTimer();
   ensureAgentSystemMessage();
-  syncAgentJevInstructions();
   let activeStreamMessage = null;
-  let lastDecision = null;
   try {
     // Verification markers are included as page state, but never pause the
     // model. The user can stop the run when a site needs manual attention.
@@ -5615,37 +6138,43 @@ async function runModelAgent(userText, { showUser = true } = {}) {
     agentConversation.push({
       role: 'user',
       content: `${String(userText || '').slice(0, 12000)}\n\n${modelObservationMessage(observation).content}`,
-      images: observation?.screenshot && String(observation.screenshot).length <= 3_000_000
-        ? [{ dataUrl: observation.screenshot }]
-        : [],
+      images: [
+        ...userImages,
+        ...(observation?.screenshot && String(observation.screenshot).length <= 3_000_000
+          ? [{ dataUrl: observation.screenshot }]
+          : []),
+      ],
     });
     renderAgentContextUsage();
 
     let steps = 0;
     const maxSteps = Number(browserSettings.agentMaxSteps) || 0;
     let pageTaskTouched = false;
-    let finalizing = false;
-    let taskActionHistory = { actions: [], omittedCount: 0 };
+    let continuingText = false;
+    let accumulatedText = '';
+    const continuationPrompt = '请从上次回复断开的准确位置继续。不要重复已经给出的内容，也不要调用浏览器工具。';
     while (runId === agentRunSequence && !agentStopRequested) {
       compressAgentConversationIfNeeded();
       showAgentThinking('正在思考');
-      let streamedMessage = null;
+      const continuingThisRequest = continuingText;
+      const textBeforeContinuation = accumulatedText;
+      let streamedMessage = continuingThisRequest ? activeStreamMessage : null;
       let streamedText = '';
       const onDelta = (event) => {
         if (agentStopRequested || event?.type !== 'delta' || !event.text) return;
         streamedText += String(event.text);
-        if (pageTaskTouched && !finalizing) return;
         hideAgentThinking();
+        const visibleText = continuingThisRequest ? `${textBeforeContinuation}${streamedText}` : streamedText;
         if (!streamedMessage) {
-          streamedMessage = appendAgentStreamingMessage(streamedText);
+          streamedMessage = appendAgentStreamingMessage(visibleText);
           activeStreamMessage = streamedMessage;
         }
-        else streamedMessage.setText(streamedText);
+        else streamedMessage.setText(visibleText);
       };
       const requestModel = async () => {
         streamedText = '';
         if (streamedMessage) {
-          streamedMessage.setText('');
+          streamedMessage.setText(continuingThisRequest ? textBeforeContinuation : '');
           streamedMessage.row.classList.add('agent-message-streaming');
         }
         let streamRequestId = '';
@@ -5655,7 +6184,7 @@ async function runModelAgent(userText, { showUser = true } = {}) {
             cancelStream = () => window.shellApi.cancelAgentRequest?.(streamRequestId);
             agentRequestCancel = cancelStream;
             const response = await window.shellApi.chatAgentStream(
-              { messages: agentConversation, finalize: finalizing },
+              { messages: agentConversation, finalize: continuingThisRequest },
               onDelta,
               (requestId) => { streamRequestId = String(requestId || ''); },
             );
@@ -5666,7 +6195,7 @@ async function runModelAgent(userText, { showUser = true } = {}) {
           cancelStream = () => window.shellApi.cancelAgentRequest?.(requestId);
           agentRequestCancel = cancelStream;
           const response = await window.shellApi.chatAgent(
-            { messages: agentConversation, finalize: finalizing },
+            { messages: agentConversation, finalize: continuingThisRequest },
             (id) => { requestId = String(id || ''); },
           );
           if (!response || response.ok === false) throw new Error(response?.error || 'Agent 模型请求失败');
@@ -5683,8 +6212,28 @@ async function runModelAgent(userText, { showUser = true } = {}) {
       }
       if (!result || result.ok === false) throw new Error(result?.error || 'Agent 模型请求失败');
 
-      const text = String(result.text || '').trim();
+      const text = String(result.text || '');
       const toolCalls = Array.isArray(result.toolCalls) ? result.toolCalls.filter((call) => call && call.name) : [];
+      const responseText = continuingThisRequest ? `${textBeforeContinuation}${text}` : text;
+      continuingText = false;
+      accumulatedText = responseText;
+      if ((result.truncated && toolCalls.length) || (continuingThisRequest && toolCalls.length)) {
+        if (text) agentConversation.push({ role: 'assistant', content: text });
+        if (streamedMessage) {
+          streamedMessage.setText(responseText);
+          streamedMessage.row.classList.remove('agent-message-streaming');
+        } else if (text) {
+          appendAgentMessage(responseText, 'assistant');
+        }
+        appendAgentMessage(result.truncated
+          ? '模型输出达到长度上限，未执行不完整的网页操作。'
+          : '续写阶段模型返回了网页操作，未执行该操作。', 'assistant', { error: true });
+        break;
+      }
+      if (result.truncated && !text) {
+        appendAgentMessage('模型因输出长度限制结束，但没有返回可续写的文本。', 'assistant', { error: true });
+        break;
+      }
       agentConversation.push({
         role: 'assistant',
         content: text,
@@ -5695,63 +6244,28 @@ async function runModelAgent(userText, { showUser = true } = {}) {
       });
       renderAgentContextUsage();
       compressAgentConversationIfNeeded();
-      if (text && !streamedMessage && (!pageTaskTouched || toolCalls.length || finalizing)) appendAgentMessage(text, 'assistant');
+      if (result.truncated) {
+        if (streamedMessage) streamedMessage.setText(responseText);
+        else if (text) {
+          streamedMessage = appendAgentStreamingMessage(responseText);
+          activeStreamMessage = streamedMessage;
+        }
+        if (streamedMessage) streamedMessage.row.classList.remove('agent-message-streaming');
+        agentConversation.push({ role: 'user', content: continuationPrompt });
+        continuingText = true;
+        renderAgentContextUsage();
+        continue;
+      }
+      if (text && !streamedMessage) appendAgentMessage(responseText, 'assistant');
       if (streamedMessage) {
-        if (streamedText !== text) streamedMessage.setText(text || streamedText);
+        if (streamedText !== text || continuingThisRequest) streamedMessage.setText(responseText || streamedText);
         streamedMessage.row.classList.remove('agent-message-streaming');
       }
       if (!toolCalls.length) {
-        if (finalizing) {
-          if (!text && lastDecision?.completed) {
-            appendAgentMessage(`任务已完成（JEV 置信度 ${agentCompletion.confidenceLabel(lastDecision)}）。${lastDecision.reason || ''}`, 'assistant');
-          } else if (!text) {
-            appendAgentMessage('模型没有生成最终答复。', 'assistant', { error: true });
-          }
-          break;
-        }
-        if (!pageTaskTouched) {
-          if (!text) appendAgentMessage('模型没有返回可执行动作或文字结果。', 'assistant', { error: true });
-          break;
-        }
-        if (browserSettings.jevAutoJudgeEnabled === false) {
-          if (text) appendAgentMessage(text, 'assistant');
-          else appendAgentMessage('网页操作已结束，当前未启用 JEV 完成判断。', 'assistant');
-          break;
-        }
-
-        try {
-          lastDecision = await judgeAgentCompletion({
-            goal: userText,
-            actions: taskActionHistory.actions,
-            earlierActionCount: taskActionHistory.omittedCount,
-            responseText: text,
-            runId,
-            signal: retryController.signal,
-          });
-        } catch (error) {
-          if (!agentStopRequested) appendAgentMessage(`JEV 无法确认任务是否完成：${error?.message || '判断失败'}。任务未得到完成确认。`, 'assistant', { error: true });
-          break;
-        }
-        if (lastDecision.completed) {
-          if (text) appendAgentMessage(text, 'assistant');
-          else appendAgentMessage(`任务已完成（JEV 置信度 ${agentCompletion.confidenceLabel(lastDecision)}）。${lastDecision.reason || ''}`, 'assistant');
-          break;
-        }
-        appendJevContinuation(lastDecision);
-        if (maxSteps > 0 && steps >= maxSteps) {
-          appendAgentMessage(`JEV 判断任务尚未完成（置信度 ${agentCompletion.confidenceLabel(lastDecision)}）；已达到本轮工具步数上限（${maxSteps}）。`, 'assistant', { error: true });
-          break;
-        }
-        continue;
-      }
-
-      if (finalizing) {
-        appendAgentMessage('模型在最终总结阶段仍请求网页工具，本轮已停止以避免继续操作。', 'assistant', { error: true });
+        if (!text) appendAgentMessage(pageTaskTouched ? '网页操作已结束，模型没有生成最终答复。' : '模型没有返回可执行动作或文字结果。', 'assistant', { error: true });
         break;
       }
 
-      const completedActions = [];
-      let ranPageTool = false;
       for (const call of toolCalls) {
         if (agentStopRequested || (maxSteps > 0 && steps >= maxSteps)) {
           agentConversation.push(modelToolResultMessage(call, { ok: false, error: '本轮已停止，工具未执行' }));
@@ -5766,11 +6280,7 @@ async function runModelAgent(userText, { showUser = true } = {}) {
           toolResult = error?.toolResult || { ok: false, error: error?.message || '工具执行失败' };
         }
         steps += 1;
-        if (call.name !== 'jev_decide') {
-          pageTaskTouched = true;
-          ranPageTool = true;
-        }
-        completedActions.push({ name: call.name, arguments: call.arguments, result: toolResult });
+        pageTaskTouched = true;
         const actionDisplayResult = toolResult?.type === 'observation'
           ? summarizeAgentObservation(toolResult)
           : toolResult;
@@ -5781,37 +6291,8 @@ async function runModelAgent(userText, { showUser = true } = {}) {
         agentConversation.push(modelToolResultMessage(call, toolResult));
       }
 
-      taskActionHistory = agentCompletion.appendActionHistory(
-        taskActionHistory,
-        completedActions.map(summarizeAgentAction),
-      );
-
-      if (ranPageTool && !agentStopRequested && browserSettings.jevAutoJudgeEnabled !== false) {
-        try {
-          lastDecision = await judgeAgentCompletion({
-            goal: userText,
-            actions: taskActionHistory.actions,
-            earlierActionCount: taskActionHistory.omittedCount,
-            responseText: text,
-            runId,
-            signal: retryController.signal,
-          });
-        } catch (error) {
-          if (!agentStopRequested) appendAgentMessage(`JEV 无法确认任务是否完成：${error?.message || '判断失败'}。任务未得到完成确认。`, 'assistant', { error: true });
-          break;
-        }
-        appendJevContinuation(lastDecision);
-        if (lastDecision.completed) {
-          finalizing = true;
-          continue;
-        }
-      }
-
       if (!agentStopRequested && maxSteps > 0 && steps >= maxSteps) {
-        const message = lastDecision && !lastDecision.completed
-          ? `JEV 判断任务尚未完成（置信度 ${agentCompletion.confidenceLabel(lastDecision)}）；已达到本轮工具步数上限（${maxSteps}）。`
-          : `已达到本轮工具步数上限（${maxSteps}），任务未得到完成确认。`;
-        appendAgentMessage(message, 'assistant', { error: true });
+        appendAgentMessage(`已达到本轮工具步数上限（${maxSteps}）。`, 'assistant', { error: true });
         break;
       }
     }
@@ -5820,10 +6301,7 @@ async function runModelAgent(userText, { showUser = true } = {}) {
     hideAgentThinking();
     activeStreamMessage?.row.classList.remove('agent-message-streaming');
     if (!agentStopRequested) {
-      const prefix = lastDecision?.completed
-        ? `任务已由 JEV 确认完成（置信度 ${agentCompletion.confidenceLabel(lastDecision)}），但最终答复生成失败`
-        : '模型操作失败，任务未得到完成确认';
-      appendAgentMessage(`${prefix}：${error?.message || '未知错误'}`, 'assistant', { error: true });
+      appendAgentMessage(`模型操作失败：${error?.message || '未知错误'}`, 'assistant', { error: true });
     }
   } finally {
     hideAgentThinking();
@@ -5996,7 +6474,7 @@ function drainAgentTasks() {
   const promise = (async () => {
     while (!tornDown && agentTaskQueue.length) {
       const task = agentTaskQueue.shift();
-      if (task?.type === 'model') await runModelAgent(task.text, { showUser: task.showUser !== false });
+      if (task?.type === 'model') await runModelAgent(task.text, { showUser: task.showUser !== false, images: task.images });
       else if (task?.type === 'action') await performAgentAction(task.action, task.userText, { showUser: task.showUser !== false });
     }
   })();
@@ -6032,19 +6510,23 @@ function runAgentAction(action, userText = '') {
   scheduleAgentTask({ type: 'action', action, userText, showUser }, 'queue');
 }
 
-function scheduleModelMessage(text, mode = 'queue') {
+function scheduleModelMessage(text, mode = 'queue', images = []) {
   const value = String(text || '').trim();
-  if (!value) return;
+  const attachments = Array.isArray(images) ? images : [];
+  if (!value && !attachments.length) return;
   const active = Boolean(agentBusy || agentTaskDrainPromise);
-  if (active) appendAgentMessage(value, 'user');
-  scheduleAgentTask({ type: 'model', text: value, showUser: !active }, mode);
+  if (active) appendAgentMessage(value || '已发送图片', 'user', { images: attachments });
+  scheduleAgentTask({ type: 'model', text: value, images: attachments, showUser: !active }, mode);
 }
 
 function scheduleComposerMessage(mode = 'queue') {
   const text = agentComposer?.value.trim() || '';
-  if (!text) return;
+  if (!text && !agentComposerImages.length) return;
+  const images = agentComposerImages;
+  agentComposerImages = [];
+  renderAgentComposerImages();
   if (agentComposer) agentComposer.value = '';
-  scheduleModelMessage(text, mode);
+  scheduleModelMessage(text, mode, images);
 }
 
 function setAgentOpen(open) {
@@ -6063,6 +6545,8 @@ function setAgentOpen(open) {
 function teardown() {
   if (tornDown) return;
   tornDown = true;
+  closePageFind(false);
+  window.clearTimeout(downloadNoticeTimer);
   agentTaskQueue = [];
   stopModelAgent();
   clearAgentTaskTimer();
@@ -6110,12 +6594,13 @@ function bindExtensionIconFallbacks(root) {
 
 function renderExtensions(nextItems) {
   extensionItems = Array.isArray(nextItems) ? nextItems : [];
-  const enabledCount = extensionItems.filter((item) => item.enabled).length;
+  const enabledItems = extensionItems.filter((item) => item.enabled);
+  const enabledCount = enabledItems.length;
   if (extensionCount) {
     extensionCount.textContent = String(enabledCount);
     extensionCount.hidden = enabledCount === 0;
   }
-  if (extensionsEmpty) extensionsEmpty.hidden = extensionItems.length > 0;
+  if (extensionsEmpty) extensionsEmpty.hidden = enabledItems.length > 0;
   if (extensionToolbar) {
     extensionToolbar.textContent = '';
     for (const item of extensionItems.filter((candidate) => candidate.enabled && candidate.pinned)) {
@@ -6131,6 +6616,10 @@ function renderExtensions(nextItems) {
     bindExtensionIconFallbacks(extensionToolbar);
   }
   if (!extensionsList) return;
+  extensionsList.hidden = enabledItems.length === 0;
+  if (extensionsCompatibility) {
+    extensionsCompatibility.hidden = !enabledItems.some((item) => item.requiresUserScripts === true);
+  }
   const renderItems = (items) => items.map((item) => {
     const name = item.name || '未命名插件';
     const stateLabel = item.status === 'error' ? '加载失败' : item.enabled ? '已启用' : '未启用';
@@ -6161,7 +6650,7 @@ function renderExtensions(nextItems) {
   const renderGroup = (label, items) => items.length
     ? `<section class="extensions-group"><h3>${label}<span>${items.length}</span></h3>${renderItems(items)}</section>`
     : '';
-  extensionsList.innerHTML = `${renderGroup('本环境已启用', extensionItems.filter((item) => item.enabled))}${renderGroup('未在此环境启用', extensionItems.filter((item) => !item.enabled))}`;
+  extensionsList.innerHTML = renderGroup('本环境已启用', enabledItems);
   bindExtensionIconFallbacks(extensionsList);
 }
 
@@ -6182,15 +6671,30 @@ function downloadStateLabel(record) {
   if (record?.state === 'completed') return '已完成';
   if (record?.state === 'cancelled') return '已取消';
   if (record?.state === 'interrupted') return '已中断';
+  if (record?.paused) return '已暂停';
   return '下载中';
 }
 
 function renderDownloads(nextItems = browserDownloads) {
+  const completed = new Set(browserDownloads.filter((item) => item.state === 'completed').map((item) => item.id));
   browserDownloads = Array.isArray(nextItems) ? nextItems : [];
   const activeCount = browserDownloads.filter((item) => item.state === 'progressing').length;
   if (downloadCount) {
-    downloadCount.textContent = String(activeCount || browserDownloads.length);
-    downloadCount.hidden = browserDownloads.length === 0;
+    downloadCount.textContent = String(activeCount);
+    downloadCount.hidden = activeCount === 0;
+  }
+  if (downloadsToggle) {
+    downloadsToggle.classList.toggle('is-downloading', activeCount > 0);
+    const active = browserDownloads.filter((item) => item.state === 'progressing');
+    const total = active.reduce((sum, item) => sum + (Number(item.totalBytes) || 0), 0);
+    const received = active.reduce((sum, item) => sum + (Number(item.receivedBytes) || 0), 0);
+    downloadsToggle.style.setProperty('--download-progress', `${total > 0 ? Math.min(100, received / total * 100) : 0}%`);
+    if (browserDownloads.some((item) => item.state === 'completed' && !completed.has(item.id))) {
+      downloadsToggle.classList.add('download-complete');
+      downloadsToggle.title = '下载已完成';
+      window.clearTimeout(downloadNoticeTimer);
+      downloadNoticeTimer = window.setTimeout(() => { downloadsToggle.classList.remove('download-complete'); downloadsToggle.title = '下载'; }, 4000);
+    }
   }
   if (downloadsEmpty) downloadsEmpty.hidden = browserDownloads.length > 0;
   if (!downloadsList) return;
@@ -6199,9 +6703,11 @@ function renderDownloads(nextItems = browserDownloads) {
     const received = Number(record.receivedBytes) || 0;
     const progress = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0;
     const detail = total > 0 ? `${formatDownloadBytes(received)} / ${formatDownloadBytes(total)}` : formatDownloadBytes(received);
+    const button = (action, label, icon) => `<button class="download-action" type="button" data-download-action="${action}" data-download-id="${escapeHtml(record.id)}" title="${label}" aria-label="${label}"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-${icon}"></use></svg></button>`;
     const action = record.state === 'progressing'
-      ? `<button class="download-action" type="button" data-download-action="cancel" data-download-id="${escapeHtml(record.id)}" title="取消下载" aria-label="取消下载"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-stop"></use></svg></button>`
-      : `<button class="download-action" type="button" data-download-action="folder" data-download-id="${escapeHtml(record.id)}" title="打开所在文件夹" aria-label="打开所在文件夹"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-folder"></use></svg></button><button class="download-action" type="button" data-download-action="open" data-download-id="${escapeHtml(record.id)}" title="打开文件" aria-label="打开文件"><svg class="shell-icon" aria-hidden="true"><use href="#shell-icon-open"></use></svg></button>`;
+      ? button(record.paused ? 'resume' : 'pause', record.paused ? '继续下载' : '暂停下载', record.paused ? 'play' : 'pause') + button('cancel', '取消下载', 'close')
+      : record.state === 'completed' ? button('folder', '打开所在文件夹', 'folder') + button('open', '打开文件', 'open')
+        : record.canResume ? button('resume', '继续下载', 'play') + button('cancel', '取消下载', 'close') : '';
     return `<div class="download-item"><div class="download-item-copy"><span class="download-item-name" title="${escapeHtml(record.filename || '下载文件')}">${escapeHtml(record.filename || '下载文件')}</span><span class="download-item-meta">${downloadStateLabel(record)} · ${escapeHtml(detail)}</span>${record.state === 'progressing' ? `<span class="download-progress"><i style="width:${progress}%"></i></span>` : ''}</div><div class="download-actions">${action}</div></div>`;
   }).join('');
 }
@@ -6318,11 +6824,29 @@ window.shellApi?.onOpenNewTab?.((details) => {
     return;
   }
   try {
-    const item = createTab(normalizedUrl(url), details?.focus !== false);
+    const item = createTab(normalizedUrl(url), { activate: details?.focus !== false, focusAddress: false });
     if (!item) throw new Error('无法创建新标签页');
   } catch (error) {
     setShellStatus(`新标签页打开失败：${error?.message || '未知错误'}`, 'error');
   }
+});
+window.shellApi?.onTabAction?.((details) => runTabAction(details.tabId, details.command));
+window.shellApi?.onHistoryUpdated?.((details) => {
+  if (!details?.profileId || details.profileId === profileId) applyBrowsingHistory(details.history);
+});
+window.shellApi?.onFindResult?.((result) => {
+  const item = activeTab();
+  if (!item?.view || pageFind?.hidden || item.findToken !== result?.token) return;
+  try { if (item.view.getWebContentsId() !== result.webContentsId) return; } catch { return; }
+  pageFindCount.textContent = `${result.activeMatchOrdinal || 0}/${result.matches || 0}`;
+  pageFindCount.dataset.empty = result.matches === 0 ? 'true' : 'false';
+});
+window.shellApi?.onBrowserCommand?.((details) => {
+  if (tornDown) return;
+  let guestId;
+  try { guestId = activeTab()?.view?.getWebContentsId(); } catch { return; }
+  if (details?.webContentsId && guestId !== details.webContentsId) return;
+  runBrowserShortcut(details?.command || '');
 });
 window.shellApi?.onDownloadsUpdated?.((details) => {
   if (details?.profileId && details.profileId !== profileId) return;
@@ -6330,13 +6854,7 @@ window.shellApi?.onDownloadsUpdated?.((details) => {
 });
 window.shellApi?.onExtensionsUpdated?.((items) => renderExtensions(items));
 window.shellApi?.onConnectionUpdated?.((details) => {
-  if (!details || typeof details !== 'object') return;
-  const country = document.querySelector('#connection-country');
-  const ip = document.querySelector('#connection-ip');
-  const latency = document.querySelector('#connection-latency');
-  if (country) country.textContent = details.country || '未知国家';
-  if (ip) ip.textContent = details.ip || '未解析';
-  if (latency) latency.textContent = details.latency || '未测';
+  applyConnectionDetails(details);
 });
 window.shellApi?.onConfirmationRequest?.((request) => {
   if (!request?.requestId) return;
@@ -6355,8 +6873,7 @@ window.shellApi?.onProfileUpdated?.((details) => {
   if (details.profileId && details.profileId !== profileId) return;
   if (typeof details.name === 'string' && details.name.trim()) {
     profileName = details.name.trim();
-    const name = document.querySelector('#profile-name');
-    if (name) name.textContent = profileName;
+    setIdentityText('#profile-name', profileName);
     const item = activeTab();
     document.title = `${item?.title || '新标签页'} · ${profileName} · ${brandName}`;
     renderAgentSettings(browserSettings);
@@ -6468,19 +6985,62 @@ agentModelRefresh?.addEventListener('click', () => {
   if (!cancelAgentModelFetch()) void fetchAgentModels();
 });
 agentHumanVerificationResume?.addEventListener('click', () => void resumeHumanVerification());
+agentContextUsage?.addEventListener('pointerenter', () => agentContextTooltip?.setAttribute('aria-hidden', 'false'));
+agentContextUsage?.addEventListener('pointerleave', () => agentContextTooltip?.setAttribute('aria-hidden', 'true'));
+agentContextUsage?.addEventListener('focus', () => agentContextTooltip?.setAttribute('aria-hidden', 'false'));
+agentContextUsage?.addEventListener('blur', () => agentContextTooltip?.setAttribute('aria-hidden', 'true'));
 agentContextUsage?.addEventListener('click', () => requestAgentContextCompression());
 agentComposerForm?.addEventListener('submit', (event) => {
   event.preventDefault();
   if (agentBusy) {
     stopModelAgent();
+    if (agentComposerImages.length || agentComposer?.value.trim()) {
+      setAgentComposerAttachmentStatus('当前轮已停止；输入和图片草稿保留，当前轮结束后再次发送');
+    }
     return;
   }
   const input = agentComposer?.value.trim() || '';
-  if (!input) return;
+  const images = agentComposerImages;
+  if (!input && !images.length) return;
+  agentComposerImages = [];
+  renderAgentComposerImages();
+  setAgentComposerAttachmentStatus('');
   agentComposer.value = '';
+  if (images.length) {
+    scheduleModelMessage(input, 'queue', images);
+    return;
+  }
   const parsed = parseAgentCommand(input);
   if (!parsed || parsed.kind === 'help') scheduleModelMessage(input);
   else void runAgentAction(parsed, input);
+});
+agentComposerAttachments?.addEventListener('click', (event) => {
+  const remove = event.target.closest('[data-remove-agent-image]');
+  if (!remove) return;
+  const imageId = Number(remove.dataset.removeAgentImage);
+  agentComposerImages = agentComposerImages.filter((image) => image.id !== imageId);
+  renderAgentComposerImages();
+  setAgentComposerAttachmentStatus(agentComposerImages.length ? `已添加 ${agentComposerImages.length} 张图片` : '');
+});
+agentComposer?.addEventListener('paste', (event) => {
+  const items = [...(event.clipboardData?.items || [])];
+  const imageItems = items.filter((item) => item.kind === 'file' && String(item.type || '').toLowerCase().startsWith('image/'));
+  if (!imageItems.length) return;
+  event.preventDefault();
+  const textItem = items.find((item) => item.kind === 'string' && item.type === 'text/plain');
+  const pastedText = event.clipboardData?.getData('text/plain') || '';
+  if (pastedText) insertAgentComposerText(pastedText);
+  agentImageReadQueue = agentImageReadQueue.then(async () => {
+    const images = await Promise.all(imageItems.map((item) => readAgentClipboardImage(item.getAsFile())));
+    if (tornDown) return;
+      agentComposerImages.push(...images);
+      renderAgentComposerImages();
+      setAgentComposerAttachmentStatus(agentBusy
+        ? `${agentComposerImages.length} 张图片已保留为草稿；当前轮结束后再次发送`
+        : `已添加 ${agentComposerImages.length} 张图片`);
+  }).catch((error) => {
+    setAgentComposerAttachmentStatus(error?.message || '读取剪贴板图片失败', true);
+  });
 });
 agentComposer?.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
@@ -6663,7 +7223,6 @@ downloadsToggle?.addEventListener('click', (event) => {
   if (!open) {
     closeLocalListeners();
     setBrowserSettingsOpen(false);
-    setAgentOpen(false);
     if (extensionsPanel) extensionsPanel.hidden = true;
     extensionsToggle?.setAttribute('aria-expanded', 'false');
     void refreshDownloads();
@@ -6712,6 +7271,18 @@ function closeBrowserMoreMenu() {
   browserMoreToggle?.setAttribute('aria-expanded', 'false');
 }
 
+function dismissBrowserPopovers() {
+  closeBrowserMoreMenu();
+  closeConnectionRouteMenu();
+  closeBookmarkMenu();
+  setTabSwitcherOpen(false);
+  closeLocalListeners();
+  if (downloadsPanel) downloadsPanel.hidden = true;
+  downloadsToggle?.setAttribute('aria-expanded', 'false');
+  if (extensionsPanel) extensionsPanel.hidden = true;
+  extensionsToggle?.setAttribute('aria-expanded', 'false');
+}
+
 async function runBrowserCommand(command) {
   closeBrowserMoreMenu();
   const currentUrl = activeTab()?.url || address?.value || '';
@@ -6731,6 +7302,7 @@ async function runBrowserCommand(command) {
     }
     case 'extensions': extensionsToggle?.click(); break;
     case 'clear-data': {
+      if (!await requestShellConfirmation({ title: '删除浏览数据', message: '删除当前环境的 Cookie、网站存储和浏览历史？' })) break;
       const result = await window.shellApi?.clearBrowsingData?.();
       if (result?.ok !== false) {
         recognizedNewTabSites = [];
@@ -6744,14 +7316,10 @@ async function runBrowserCommand(command) {
     }
     case 'zoom-out': if (shellInterfaceZoom) shellInterfaceZoom.step(-1); else if (webview?.getZoomFactor && webview?.setZoomFactor) webview.setZoomFactor(Math.max(.25, (await webview.getZoomFactor()) - .1)); break;
     case 'zoom-in': if (shellInterfaceZoom) shellInterfaceZoom.step(1); else if (webview?.getZoomFactor && webview?.setZoomFactor) webview.setZoomFactor(Math.min(5, (await webview.getZoomFactor()) + .1)); break;
-    case 'fullscreen': webview?.executeJavaScript?.('document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(() => {})', true); break;
+    case 'fullscreen': void window.shellApi?.toggleFullscreen?.(); break;
     case 'print': webview?.print?.({}); break;
     case 'translate': if (currentUrl) navigateAddress(`https://translate.google.com/translate?sl=auto&tl=zh-CN&u=${encodeURIComponent(currentUrl)}`); break;
-    case 'find': {
-      const query = await requestShellInput({ eyebrow: '页面工具', title: '查找页面内容', message: '输入要在当前页面中查找的文字。', label: '查找内容', value: '' });
-      if (query && webview?.findInPage) webview.findInPage(query);
-      break;
-    }
+    case 'find': openPageFind(); break;
     case 'share': if (navigator.share && currentUrl) await navigator.share({ title: lastPageTitle || currentUrl, url: currentUrl }).catch(() => {}); else setShellStatus('当前页面地址已复制'); if (!navigator.share && currentUrl) await navigator.clipboard?.writeText(currentUrl); break;
     case 'more-tools': setShellStatus('更多工具：开发者工具请使用 F12'); if (webview?.openDevTools) webview.openDevTools(); break;
     case 'help': navigateAddress('https://support.google.com/chrome/'); break;
@@ -6763,13 +7331,19 @@ async function runBrowserCommand(command) {
 
 browserMoreToggle?.addEventListener('click', (event) => {
   event.stopPropagation();
+  closeConnectionRouteMenu();
   const open = browserMoreMenu?.hidden === false;
   if (browserMoreMenu) browserMoreMenu.hidden = open;
   browserMoreToggle.setAttribute('aria-expanded', open ? 'false' : 'true');
+  if (!open) browserMoreMenu?.querySelector('button:not(:disabled)')?.focus();
 });
 browserMoreMenu?.addEventListener('click', (event) => {
   const button = event.target.closest('[data-browser-command]');
   if (button) void runBrowserCommand(button.dataset.browserCommand);
+});
+connectionRouteMenu?.addEventListener('click', (event) => {
+  const option = event.target.closest('[data-connection-route-option]');
+  if (option && !option.disabled) void switchConnectionRoute(option);
 });
 shellInputModalSubmit?.addEventListener('click', () => {
   closeShellInput(activeShellInput?.isConfirmation ? true : shellInputModalValue?.value ?? '');
@@ -6809,6 +7383,7 @@ document.addEventListener('click', (event) => {
     closeLocalListeners();
   }
   if (browserMoreMenu?.hidden === false && !event.target.closest('#browser-more-menu, #browser-more-toggle')) closeBrowserMoreMenu();
+  if (connectionRouteMenu?.hidden === false && !event.target.closest('#connection-route-menu, #connection-details')) closeConnectionRouteMenu();
 });
 
 document.querySelector('#back').addEventListener('click', () => {
@@ -6818,8 +7393,12 @@ document.querySelector('#forward').addEventListener('click', () => {
   if (webview && typeof webview.canGoForward === 'function' && webview.canGoForward()) webview.goForward();
 });
 document.querySelector('#reload').addEventListener('click', () => {
-  if (webview && typeof webview.reload === 'function') webview.reload();
+  const item = activeTab();
+  if (item?.loading) { item.view?.stop(); item.loading = false; syncNavigationControls(); renderTabs(); }
+  else reloadActivePage();
 });
+connectionDetailsButton?.addEventListener('click', () => void refreshConnection());
+connectionDetailsButton?.addEventListener('contextmenu', (event) => void openConnectionRouteMenu(event));
 document.querySelector('#address-form').addEventListener('submit', (event) => {
   event.preventDefault();
   hideAddressSuggestions();
@@ -6850,6 +7429,16 @@ address?.addEventListener('select', () => {
 window.addEventListener('pointermove', trackAddressPointer);
 window.addEventListener('pointerup', endAddressPointer);
 address?.addEventListener('keydown', (event) => {
+  if (event.isComposing) return;
+  if (event.key === 'Enter' && event.altKey) {
+    event.preventDefault();
+    event.stopPropagation();
+    const selected = suggestionRecords(addressValueForNavigation())[addressSuggestionIndex];
+    const url = selected?.url || normalizedUrl(addressValueForNavigation());
+    hideAddressSuggestions();
+    createTab(url, { focusAddress: false });
+    return;
+  }
   if (event.key === 'ArrowDown') {
     event.preventDefault();
     selectAddressSuggestion(1);
@@ -6860,7 +7449,11 @@ address?.addEventListener('keydown', (event) => {
     event.preventDefault();
     chooseActiveAddressSuggestion();
   } else if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
+    syncAddress();
     hideAddressSuggestions();
+    activeTab()?.view?.focus();
   }
 });
 bookmarkToggle?.addEventListener('click', () => void toggleBookmark());
@@ -6901,25 +7494,13 @@ tabSwitcherPanel?.addEventListener('click', (event) => {
   } else if (action.dataset.tabSwitcherAction === 'close') {
     closeTab(action.dataset.tabId);
   } else if (action.dataset.tabSwitcherAction === 'restore') {
-    const index = recentlyClosedTabs.findIndex((item) => item.id === action.dataset.closedTabId);
-    if (index < 0) return;
-    const [closed] = recentlyClosedTabs.splice(index, 1);
     setTabSwitcherOpen(false);
-    const item = createTab(closed.url);
-    if (!item) {
-      recentlyClosedTabs.unshift(closed);
-      setTabSwitcherOpen(true);
-      renderTabSwitcher();
-      return;
-    }
-    item.title = closed.title;
-    item.favicon = closed.favicon;
-    item.accent = closed.accent || fallbackTabAccent(closed.favicon || closed.url || item.id);
-    renderTabs();
+    restoreClosedTab(action.dataset.closedTabId);
   }
 });
 
 window.addEventListener('keydown', (event) => {
+  if (event.isComposing || event.defaultPrevented) return;
   if (event.key === 'Escape' && activeShellInput) {
     event.preventDefault();
     closeShellInput(null);
@@ -6928,6 +7509,11 @@ window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && bookmarkMenu?.hidden === false) {
     event.preventDefault();
     closeBookmarkMenu(true);
+    return;
+  }
+  if (event.key === 'Escape' && connectionRouteMenu?.hidden === false) {
+    event.preventDefault();
+    closeConnectionRouteMenu(true);
     return;
   }
   if (event.key === 'Escape' && tabSwitcherPanel?.hidden === false) {
@@ -6957,43 +7543,44 @@ window.addEventListener('keydown', (event) => {
     toggleActiveDevTools();
     return;
   }
-  const modifier = event.ctrlKey || event.metaKey;
-  if (modifier && event.key.toLowerCase() === 't') {
+  const command = window.browserShortcuts?.browserShortcutCommandFromEvent(event);
+  if (command && command !== 'address-open-new-tab') {
     event.preventDefault();
-    createTab('about:newtab');
-    return;
-  }
-  if (modifier && event.key.toLowerCase() === 'w') {
-    event.preventDefault();
-    closeTab(activeTabId);
-    return;
-  }
-  if (modifier && event.key === 'Tab') {
-    event.preventDefault();
-    cycleTab(event.shiftKey ? -1 : 1);
-    return;
-  }
-  if (modifier && event.key.toLowerCase() === 'l') {
-    event.preventDefault();
-    address.focus();
-    address.select();
-    return;
-  }
-  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'a') {
-    event.preventDefault();
-    toggleTabSwitcher();
-    return;
-  }
-  if (event.ctrlKey && event.altKey && event.key.toLowerCase() === 'd') {
-    event.preventDefault();
-    void toggleBookmarkBar();
+    runBrowserShortcut(command);
   }
 });
+
+pageFindInput?.addEventListener('input', () => runPageFind(true, true));
+pageFindInput?.addEventListener('keydown', (event) => {
+  if (event.isComposing) return;
+  if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); runPageFind(!event.shiftKey); }
+});
+pageFind?.addEventListener('submit', (event) => { event.preventDefault(); runPageFind(true); });
+document.querySelector('#page-find-previous')?.addEventListener('click', () => runPageFind(false));
+document.querySelector('#page-find-close')?.addEventListener('click', () => closePageFind());
+document.querySelector('#downloads-close')?.addEventListener('click', () => { downloadsPanel.hidden = true; downloadsToggle?.setAttribute('aria-expanded', 'false'); downloadsToggle?.focus(); });
+for (const panel of [browserMoreMenu, tabSwitcherPanel, downloadsPanel, connectionRouteMenu]) {
+  panel?.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || event.target.matches('input, textarea, select')) return;
+    const buttons = [...panel.querySelectorAll('button:not(:disabled)')].filter((button) => button.getClientRects().length > 0);
+    if (!buttons.length) return;
+    const index = buttons.indexOf(document.activeElement);
+    let next;
+    if (event.key === 'ArrowDown') next = (index + 1) % buttons.length;
+    else if (event.key === 'ArrowUp') next = (index - 1 + buttons.length) % buttons.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = buttons.length - 1;
+    else return;
+    event.preventDefault();
+    buttons[next].focus();
+  });
+}
 
 exposeBrowserAgent();
 void refreshBrowserSettings();
 void refreshRecognizedNewTabSites();
 void refreshNewTabSearchHistory();
+void refreshBrowsingHistory();
 shellInterfaceZoom = window.interfaceZoom?.createInterfaceZoom({
   indicator: zoomIndicator,
   applyZoom: (factor) => {
@@ -7013,6 +7600,6 @@ window.shellApi?.onInterfaceZoomCommand?.((command) => {
 void refreshBookmarks();
 void refreshDownloads();
 void refreshExtensions();
-createTab(startUrl);
+createTab('about:newtab');
 ensureAgentWelcome();
 setShellStatus('就绪');

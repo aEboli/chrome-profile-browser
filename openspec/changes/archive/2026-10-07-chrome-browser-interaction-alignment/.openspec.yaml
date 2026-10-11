@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-06
+
+goal: 对齐内置浏览器的 Chrome 常用操作、界面反馈与页面工具，并保持环境隔离和已有配置兼容。

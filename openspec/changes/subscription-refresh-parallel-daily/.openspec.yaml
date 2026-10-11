@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-10-11
+goal: 提高节点检查和订阅刷新速度，并让订阅每天自动更新一次

@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-11
+goal: 修复网页助手图片粘贴与长回复截断，移除 JEV 判断并补齐浅色主题
+retire_capabilities: true

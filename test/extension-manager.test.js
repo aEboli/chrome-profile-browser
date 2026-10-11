@@ -84,12 +84,30 @@ test('records popup, side panel and options entry points from a manifest', () =>
     action: { default_popup: 'ui/popup.html' },
     side_panel: { default_path: 'ui/side.html' },
     options_ui: { page: 'ui/options.html' },
+    permissions: ['userScripts'],
+    optional_permissions: ['scripting'],
   }), 'utf8');
-  assert.deepEqual(readManifest(root).panels, {
+  const manifest = readManifest(root);
+  assert.deepEqual(manifest.panels, {
     popup: 'ui/popup.html',
     sidePanel: 'ui/side.html',
     options: 'ui/options.html',
   });
+  assert.deepEqual(manifest.permissions, ['userScripts']);
+  assert.deepEqual(manifest.optionalPermissions, ['scripting']);
+});
+
+test('does not infer userScripts support for extensions that do not declare the permission', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-extension-user-scripts-test-'));
+  fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify({
+    manifest_version: 3,
+    name: '普通扩展',
+    version: '1.0.0',
+    permissions: ['storage'],
+  }), 'utf8');
+  const manifest = readManifest(root);
+  assert.deepEqual(manifest.permissions, ['storage']);
+  assert.deepEqual(manifest.optionalPermissions, []);
 });
 
 test('loads manifest icons from the extension directory and prefers action icons for the browser toolbar', () => {
@@ -239,6 +257,35 @@ test('derives an extension ID from CRX2 and CRX3 archive headers', () => {
   crx3.writeUInt32LE(header.length, 8);
   header.copy(crx3, 12);
   assert.equal(extensionIdFromArchive(crx3), expected);
+});
+
+test('selects the CRX3 developer key when a publisher proof appears first', () => {
+  const crypto = require('node:crypto');
+  const publisherKey = Buffer.from('test-publisher-public-key-material');
+  const developerKey = Buffer.from('test-developer-public-key-material');
+  const expected = extensionIdFromManifestKey(developerKey.toString('base64'));
+  const proof = (key) => Buffer.concat([
+    Buffer.from([0x0a, key.length]), key,
+    Buffer.from([0x12, 0x01, 0x00]),
+  ]);
+  const publisherProof = proof(publisherKey);
+  const developerProof = proof(developerKey);
+  const signedId = crypto.createHash('sha256').update(developerKey).digest().subarray(0, 16);
+  const signedData = Buffer.concat([Buffer.from([0x0a, 0x10]), signedId]);
+  const header = Buffer.concat([
+    Buffer.from([0x12, publisherProof.length]), publisherProof,
+    Buffer.from([0x12, developerProof.length]), developerProof,
+    Buffer.from([0x82, 0xf1, 0x04, signedData.length]), signedData,
+  ]);
+  const crx3 = Buffer.alloc(12 + header.length + 4);
+  crx3.write('Cr24', 0, 'ascii');
+  crx3.writeUInt32LE(3, 4);
+  crx3.writeUInt32LE(header.length, 8);
+  header.copy(crx3, 12);
+  assert.equal(extensionIdFromArchive(crx3), expected);
+  const mismatched = Buffer.from(crx3);
+  mismatched[12 + header.length - 1] ^= 0xff;
+  assert.equal(extensionIdFromArchive(mismatched), '');
 });
 
 test('rejects malformed or unsupported manifests', () => {

@@ -1,10 +1,17 @@
 'use strict';
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 function safeText(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeEngineMode(value, enginePath = '') {
+  const mode = safeText(value).toLowerCase();
+  if (mode === 'electron' || mode === 'external') return mode;
+  return safeText(enginePath) ? 'external' : 'electron';
 }
 
 function validateEnginePath(value, options = {}) {
@@ -31,6 +38,59 @@ function validateEnginePath(value, options = {}) {
   }
   if (!stat.isFile()) throw new Error('外部 Chromium 路径必须指向可执行文件');
   return candidate;
+}
+
+function discoverChromeExecutable(options = {}) {
+  const platform = options.platform || process.platform;
+  const fsImpl = options.fsImpl || fs;
+  const pathImpl = options.pathImpl || (platform === 'win32' ? path.win32 : path);
+  const env = options.env || process.env;
+  const homeDir = safeText(options.homeDir) || os.homedir();
+  const envValue = (key) => {
+    const entry = Object.entries(env).find(([name]) => name.toLowerCase() === key.toLowerCase());
+    return safeText(entry?.[1]);
+  };
+  let candidates = [];
+
+  if (platform === 'win32') {
+    const programFiles = envValue('ProgramFiles') || 'C:\\Program Files';
+    const programFilesX86 = envValue('ProgramFiles(x86)') || 'C:\\Program Files (x86)';
+    const localAppData = envValue('LOCALAPPDATA') || pathImpl.join(homeDir, 'AppData', 'Local');
+    candidates = [programFiles, programFilesX86, localAppData]
+      .map((root) => pathImpl.join(root, 'Google', 'Chrome', 'Application', 'chrome.exe'));
+  } else if (platform === 'darwin') {
+    candidates = [
+      '/Applications/Google Chrome.app',
+      pathImpl.join(homeDir, 'Applications', 'Google Chrome.app'),
+    ];
+  } else if (platform === 'linux') {
+    const pathValue = envValue('PATH');
+    const delimiter = pathImpl.delimiter || ':';
+    const directories = pathValue.split(delimiter).filter(Boolean);
+    candidates = [
+      ...directories.flatMap((directory) => ['google-chrome-stable', 'google-chrome']
+        .map((executable) => pathImpl.join(directory, executable))),
+      '/opt/google/chrome/google-chrome',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/google-chrome',
+    ];
+  }
+
+  for (const candidate of [...new Set(candidates)]) {
+    try {
+      return validateEnginePath(candidate, { platform, fsImpl, pathImpl });
+    } catch {
+      // Continue through standard installation locations.
+    }
+  }
+  return '';
+}
+
+function resolveExternalEnginePath(value, options = {}) {
+  const configuredPath = safeText(value);
+  return configuredPath
+    ? validateEnginePath(configuredPath, options)
+    : discoverChromeExecutable(options);
 }
 
 function buildExternalEngineArgs({ profileDataPath, startUrl, proxyArg, extensionPaths = [] }) {
@@ -94,6 +154,9 @@ function waitForProcessSpawn(child, timeoutMs = 5000) {
 
 module.exports = {
   buildExternalEngineArgs,
+  discoverChromeExecutable,
+  normalizeEngineMode,
+  resolveExternalEnginePath,
   sameEnginePath,
   validateEnginePath,
   waitForProcessSpawn,

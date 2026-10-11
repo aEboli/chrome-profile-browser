@@ -325,15 +325,6 @@
                     <div class="agent-field"><label class="field-label" for="manager-agent-temperature">温度</label><input class="text-input" id="manager-agent-temperature" name="agentTemperature" type="number" min="0" max="2" step="0.1" /></div>
                     <div class="agent-field"><label class="field-label" for="manager-agent-steps">单轮最多工具步数</label><input class="text-input" id="manager-agent-steps" name="agentMaxSteps" type="number" min="0" step="1" /></div>
                   </div></details>
-                  <div class="field-divider"><span>JEV 判断模型</span></div>
-                  <label class="checkbox-field agent-jev-toggle" for="manager-jev-enabled"><input id="manager-jev-enabled" name="jevAutoJudgeEnabled" type="checkbox" /><span>启用 JEV 模型</span></label>
-                  <p class="field-hint agent-jev-hint">关闭后，Agent 不会自动请求 JEV，也不会收到 JEV 判断工具。</p>
-                  <div class="agent-form-grid agent-form-grid--jev">
-                    <div class="agent-field"><label class="field-label" for="manager-jev-provider">JEV 来源</label><select class="text-input" id="manager-jev-provider" name="jevProvider"></select></div>
-                    <div class="agent-field"><label class="field-label" for="manager-jev-base-url">JEV 接口地址</label><input class="text-input" id="manager-jev-base-url" name="jevBaseUrl" type="url" maxlength="2048" placeholder="https://api.typesafe.ai" autocomplete="off" /></div>
-                    <div class="agent-field"><label class="field-label" for="manager-jev-model">JEV 模型</label><input class="text-input" id="manager-jev-model" name="jevModel" type="text" maxlength="256" placeholder="jev-latest" autocomplete="off" /></div>
-                    <div class="agent-field"><label class="field-label" for="manager-jev-token">JEV Key <span class="optional">官方 TypeSafe 或自定义兼容端点</span></label><input class="text-input" id="manager-jev-token" name="jevToken" type="password" maxlength="4096" autocomplete="new-password" /><div class="agent-form-token-row"><span id="manager-jev-token-status">未保存 Key</span><button id="manager-jev-token-clear" class="panel-link" type="button" hidden>清除 Key</button></div></div>
-                  </div>
                   <div class="modal-actions agent-form-actions"><button id="test-agent-connection" class="icon-button" type="button" title="测试连通性" aria-label="测试连通性"><svg class="svg-icon"><use href="#icon-zap"></use></svg></button><span class="agent-action-spacer"></span><button class="button button--primary" type="submit">保存配置</button></div>
                 </form>
               </section>
@@ -352,9 +343,9 @@
 
               <div class="settings-summary" aria-label="当前设置摘要">
                 <div class="settings-summary-item">
-                  <span class="settings-summary-label">浏览器</span>
+                  <span class="settings-summary-label">新环境默认</span>
                   <strong id="settings-summary-engine">内置 Chromium</strong>
-                  <span id="settings-summary-engine-detail">使用应用自带内核</span>
+                  <span id="settings-summary-engine-detail">新环境默认值；现有环境单独设置</span>
                 </div>
                 <div class="settings-summary-item">
                   <span class="settings-summary-label">代理核心</span>
@@ -375,15 +366,20 @@
                 <div class="settings-layout settings-runtime-layout">
                   <section class="panel settings-panel settings-panel--engine" aria-labelledby="engine-heading">
                     <div class="panel-heading">
-                      <div><p class="eyebrow">浏览器引擎</p><h3 id="engine-heading">Chromium 可执行文件</h3></div>
+                      <div><p class="eyebrow">新环境默认引擎</p><h3 id="engine-heading">Chromium 可执行文件</h3></div>
                     </div>
-                    <div class="engine-mode-status" id="engine-mode-status" role="status">当前模式：内置 Electron Chromium</div>
+                    <div class="engine-mode-switch" role="group" aria-label="新环境默认浏览器引擎">
+                      <button class="engine-mode-option" type="button" data-engine-mode="electron" aria-pressed="true">内置 Chromium</button>
+                      <button class="engine-mode-option" type="button" data-engine-mode="external" aria-pressed="false">外部 Chromium</button>
+                    </div>
+                    <div class="engine-mode-status" id="engine-mode-status" role="status">新环境默认：内置 Electron Chromium</div>
+                    <p class="field-hint engine-mode-hint">现有环境的启动引擎可在各自的环境配置中单独选择。</p>
                     <div class="input-with-button">
                       <label class="sr-only" for="engine-path">Chromium 可执行文件路径</label>
-                      <input id="engine-path" type="text" placeholder="使用 Electron 内置 Chromium" autocomplete="off" />
+                      <input id="engine-path" type="text" placeholder="选择外部 Chromium 可执行文件" autocomplete="off" />
                       <button class="button button--secondary" id="choose-engine" type="button">选择文件</button>
-                      <button class="button button--secondary" id="install-browser" type="button">更新内核</button>
                     </div>
+                    <p class="field-hint engine-discovery-status" id="engine-discovery-status" role="status" hidden></p>
                     <p class="field-hint engine-mode-hint" id="engine-update-status" hidden></p>
                     <div class="settings-actions"><button class="button button--primary" id="save-settings" type="button">保存运行设置</button></div>
                   </section>
@@ -489,11 +485,21 @@
           <input class="text-input" id="profile-name" name="name" type="text" maxlength="80" required placeholder="例如：工作测试" />
           <label class="field-label" for="profile-homepage">启动网址</label>
           <input class="text-input" id="profile-homepage" name="homepage" type="url" maxlength="2048" placeholder="https://example.com" />
+          <label class="field-label">启动引擎</label>
+          <div class="profile-config-field" data-profile-lock-field>
+            <div class="engine-mode-switch profile-engine-mode-switch" id="profile-engine-mode" role="group" aria-label="此环境的启动引擎">
+              <button class="engine-mode-option" type="button" data-profile-engine-mode="electron" aria-pressed="true">内置 Chromium</button>
+              <button class="engine-mode-option" type="button" data-profile-engine-mode="external" aria-pressed="false">外部 Chromium</button>
+            </div>
+            <button class="profile-config-lock-target" type="button" data-action="profile-config-locked" title="点击查看为什么无法修改" aria-label="启动引擎需要先停止环境才能修改" hidden><svg class="svg-icon" aria-hidden="true"><use href="#icon-lock"></use></svg></button>
+          </div>
+          <p class="profile-connection-hint">外部 Chromium 使用设置页配置的共享路径；未配置有效路径时不能保存此选择。</p>
           <label class="field-label" for="profile-node">连接方式</label>
           <div class="profile-config-field" data-profile-lock-field>
             <select class="text-input" id="profile-node" name="nodeId"></select>
             <button class="profile-config-lock-target" type="button" data-action="profile-config-locked" title="点击查看为什么无法修改" aria-label="连接方式需要先停止环境才能修改" hidden><svg class="svg-icon" aria-hidden="true"><use href="#icon-lock"></use></svg></button>
           </div>
+          <p class="profile-connection-hint">指定节点会固定使用该节点；订阅自动会按延迟择优并在故障时于同一订阅内切换，出口 IP 可能变化。</p>
           <label class="field-label" for="profile-test-identity">授权测试身份 <span class="optional">仅内置 Electron</span></label>
           <input class="text-input" id="profile-test-identity" type="text" readonly value="保存后生成" />
           <label class="field-label" for="profile-test-origins">授权测试站点来源 <span class="optional">可选</span></label>

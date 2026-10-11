@@ -24,6 +24,7 @@ test('store loads defaults and writes atomically', () => {
 
 test('store provides browser shell agent and search defaults', () => {
   const state = createStore(path.join(os.tmpdir(), `chrome-profile-browser-${Date.now()}-defaults`, 'state.json')).load();
+  assert.equal(state.settings.engineMode, 'electron');
   assert.equal(state.settings.agentApiUrl, '');
   assert.equal(state.settings.agentProtocolSuffix, '');
   assert.equal(state.settings.agentApi, '');
@@ -38,11 +39,6 @@ test('store provides browser shell agent and search defaults', () => {
   assert.equal(state.settings.agentProfileScope, 'all');
   assert.deepEqual(state.settings.agentProfileIds, []);
   assert.deepEqual(state.settings.agentProfileOverrides, {});
-  assert.equal(state.settings.jevAutoJudgeEnabled, true);
-  assert.equal(state.settings.jevProvider, 'typesafe');
-  assert.equal(state.settings.jevBaseUrl, 'https://api.typesafe.ai');
-  assert.equal(state.settings.jevModel, 'jev-latest');
-  assert.equal(state.settings.jevKey, '');
   assert.equal(state.settings.searchEngineUrl, 'https://www.google.com/search?q=%s');
   assert.equal(state.settings.newTabBackgroundOpacity, 0.72);
   assert.equal(state.settings.newTabBackgroundBlur, 18);
@@ -58,14 +54,80 @@ test('store provides browser shell agent and search defaults', () => {
   assert.equal(state.settings.theme.background, '#0f1423');
 });
 
-test('store preserves a disabled JEV setting and upgrades legacy settings as enabled', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-profile-browser-jev-'));
+test('store migrates legacy Chromium paths while preserving explicit engine mode', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-profile-browser-engine-'));
   const filePath = path.join(dir, 'state.json');
-  fs.writeFileSync(filePath, JSON.stringify({ settings: { jevAutoJudgeEnabled: false } }));
-  assert.equal(createStore(filePath).load().settings.jevAutoJudgeEnabled, false);
 
-  fs.writeFileSync(filePath, JSON.stringify({ settings: {} }));
-  assert.equal(createStore(filePath).load().settings.jevAutoJudgeEnabled, true);
+  fs.writeFileSync(filePath, JSON.stringify({ settings: {
+    enginePath: 'C:\\Chrome\\chrome.exe',
+    engineVersion: '155.0.8059.39',
+  } }), 'utf8');
+  let settings = createStore(filePath).load().settings;
+  assert.equal(settings.engineMode, 'external');
+  assert.equal(settings.enginePath, 'C:\\Chrome\\chrome.exe');
+  assert.equal(settings.engineVersion, '155.0.8059.39');
+
+  fs.writeFileSync(filePath, JSON.stringify({ settings: { enginePath: '' } }), 'utf8');
+  settings = createStore(filePath).load().settings;
+  assert.equal(settings.engineMode, 'electron');
+
+  fs.writeFileSync(filePath, JSON.stringify({ settings: {
+    engineMode: 'electron',
+    enginePath: 'C:\\Chrome\\chrome.exe',
+  } }), 'utf8');
+  settings = createStore(filePath).load().settings;
+  assert.equal(settings.engineMode, 'electron');
+  assert.equal(settings.enginePath, 'C:\\Chrome\\chrome.exe');
+});
+
+test('store migrates profile engine modes from the global default and preserves explicit choices', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-profile-browser-profile-engine-'));
+  const filePath = path.join(dir, 'state.json');
+
+  fs.writeFileSync(filePath, JSON.stringify({
+    settings: { engineMode: 'external', enginePath: 'C:\\Chrome\\chrome.exe' },
+    profiles: [
+      { id: 'legacy' },
+      { id: 'built-in', engineMode: 'electron' },
+      { id: 'external', engineMode: 'external' },
+    ],
+  }), 'utf8');
+  let profiles = createStore(filePath).load().profiles;
+  assert.deepEqual(profiles.map((profile) => profile.engineMode), ['external', 'electron', 'external']);
+
+  fs.writeFileSync(filePath, JSON.stringify({
+    settings: { engineMode: 'electron', enginePath: 'C:\\Chrome\\chrome.exe' },
+    profiles: [{ id: 'legacy' }],
+  }), 'utf8');
+  profiles = createStore(filePath).load().profiles;
+  assert.equal(profiles[0].engineMode, 'electron');
+});
+
+test('store removes legacy JEV settings and keys from global and profile configuration', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-profile-browser-agent-migration-'));
+  const filePath = path.join(dir, 'state.json');
+  fs.writeFileSync(filePath, JSON.stringify({ settings: {
+    agentModel: 'preserve-agent',
+    jevAutoJudgeEnabled: false,
+    jevProvider: 'custom',
+    jevBaseUrl: 'https://example.test',
+    jevModel: 'legacy-jev',
+    jevKey: 'enc:legacy-global-key',
+    agentProfileOverrides: { profile: { agentModel: 'profile-agent', jevToken: 'enc:legacy-profile-key' } },
+  } }), 'utf8');
+
+  const store = createStore(filePath);
+  const state = store.load();
+  assert.equal(state.settings.agentModel, 'preserve-agent');
+  assert.deepEqual(state.settings.agentProfileOverrides.profile, { agentModel: 'profile-agent' });
+  for (const key of ['jevAutoJudgeEnabled', 'jevProvider', 'jevBaseUrl', 'jevModel', 'jevKey', 'jevToken']) {
+    assert.equal(Object.hasOwn(state.settings, key), false);
+    assert.equal(Object.hasOwn(state.settings.agentProfileOverrides.profile, key), false);
+  }
+  const saved = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  assert.equal(JSON.stringify(saved).includes('legacy-jev'), false);
+  assert.equal(JSON.stringify(saved).includes('legacy-global-key'), false);
+  assert.equal(JSON.stringify(saved).includes('legacy-profile-key'), false);
 });
 
 test('store provides new-tab search, site, banner, and bookmark-bar defaults', () => {
@@ -187,6 +249,41 @@ test('store migrates subscription ordering and keeps numeric priority stable', (
   const state = createStore(filePath).load();
   assert.deepEqual(state.subscriptions.map((item) => item.id), ['priority', 'later', 'legacy-a', 'legacy-b']);
   assert.deepEqual(state.subscriptions.map((item) => item.sortOrder), [0, 8, 9, 10]);
+});
+
+test('store assigns and preserves unique subscription account tags', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-profile-browser-'));
+  const filePath = path.join(dir, 'state.json');
+  const store = createStore(filePath);
+  store.load();
+  store.update((state) => {
+    state.subscriptions.push(
+      { id: 'account-a', name: '同名订阅', sortOrder: 0 },
+      { id: 'account-b', name: '同名订阅', sortOrder: 1, accountTag: '②' },
+      { id: 'account-c', name: '同名订阅', sortOrder: 2, accountTag: '②' },
+    );
+  });
+  const state = createStore(filePath).load();
+  assert.deepEqual(state.subscriptions.map((item) => item.accountTag), ['①', '②', '③']);
+  assert.deepEqual(createStore(filePath).load().subscriptions.map((item) => item.accountTag), ['①', '②', '③']);
+});
+
+test('store preserves existing account tags when earlier legacy subscriptions lack tags', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-profile-browser-'));
+  const filePath = path.join(dir, 'state.json');
+  const store = createStore(filePath);
+  store.load();
+  store.update((state) => {
+    state.subscriptions.push(
+      { id: 'legacy', sortOrder: 0 },
+      { id: 'existing', sortOrder: 1, accountTag: '①' },
+    );
+  });
+  const reloaded = createStore(filePath);
+  assert.deepEqual(reloaded.load().subscriptions.map((item) => item.accountTag), ['②', '①']);
+  reloaded.update((state) => { state.subscriptions[0].sortOrder = 2; });
+  const subscriptions = createStore(filePath).load().subscriptions;
+  assert.deepEqual(subscriptions.map((item) => [item.id, item.accountTag]), [['existing', '①'], ['legacy', '②']]);
 });
 
 test('store keeps extension assignments across reloads', () => {
@@ -333,4 +430,19 @@ test('store keeps password book entries across reloads', () => {
   assert.equal(state.passwordEntries[0].service, 'Example');
   assert.equal(state.passwordEntries[0].profileId, 'profile-1');
   assert.equal(state.passwordEntries[0].password, 'enc:c2VjcmV0');
+});
+
+test('store persists and isolates browsing history while migrating legacy profiles', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-profile-browser-'));
+  const store = createStore(path.join(dir, 'state.json'));
+  store.load();
+  store.update((state) => {
+    state.profiles.push(
+      { id: 'first', browsingHistory: [{ url: 'https://user:secret@example.com/a', title: '测试页面', visitedAt: '2026-10-06T00:00:00.000Z' }] },
+      { id: 'second' },
+    );
+  });
+  const state = createStore(path.join(dir, 'state.json')).load();
+  assert.deepEqual(state.profiles[0].browsingHistory, [{ url: 'https://example.com/a', title: '测试页面', visitedAt: '2026-10-06T00:00:00.000Z' }]);
+  assert.deepEqual(state.profiles[1].browsingHistory, []);
 });

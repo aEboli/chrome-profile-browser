@@ -19,6 +19,20 @@ test('runs batch work with bounded concurrency and input order', async () => {
   assert.equal(maximum, 2);
 });
 
+test('runs subscription-sized probe batches with a ten-worker cap', async () => {
+  let active = 0;
+  let maximum = 0;
+  await runBoundedBatch(Array.from({ length: 30 }, (_, index) => index), async (value) => {
+    active += 1;
+    maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    active -= 1;
+    return value;
+  }, 10);
+
+  assert.equal(maximum, 10);
+});
+
 test('returns an empty result for an empty batch', async () => {
   assert.deepEqual(await runBoundedBatch([], async () => 'unused', 4), []);
 });

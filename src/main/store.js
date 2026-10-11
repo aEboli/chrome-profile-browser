@@ -1,7 +1,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { normalizeBrowsingHistory } = require('./browsing-history');
+const { ensureSubscriptionAccountTags } = require('./subscription-name');
+const { normalizeEngineMode } = require('./engine-runtime');
 
 const AGENT_REASONING_EFFORTS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const REMOVED_JEV_SETTING_KEYS = ['jevAutoJudgeEnabled', 'jevProvider', 'jevBaseUrl', 'jevModel', 'jevKey', 'jevToken'];
 
 const DEFAULT_SEARCH_ENGINES = Object.freeze([
   { id: 'google', name: 'Google', url: 'https://www.google.com/search?q=%s' },
@@ -27,6 +31,7 @@ const DEFAULT_STATE = Object.freeze({
   extensions: [],
   passwordEntries: [],
   settings: {
+    engineMode: 'electron',
     enginePath: '',
     engineVersion: '',
     engineSha256: '',
@@ -59,11 +64,6 @@ const DEFAULT_STATE = Object.freeze({
     agentProfileIds: [],
     // 仅保存按环境覆盖的配置。密钥仍以 enc:/plain: 形式保存在主进程状态中。
     agentProfileOverrides: {},
-    jevAutoJudgeEnabled: true,
-    jevProvider: 'typesafe',
-    jevBaseUrl: 'https://api.typesafe.ai',
-    jevModel: 'jev-latest',
-    jevKey: '',
     searchEngineUrl: 'https://www.google.com/search?q=%s',
     searchEngines: DEFAULT_SEARCH_ENGINES.map((item) => ({ ...item })),
     bookmarkBarAlwaysVisible: false,
@@ -164,7 +164,7 @@ function normalizeSubscriptions(value) {
     .map((item) => validSubscriptionSortOrder(item.sortOrder))
     .filter((item) => item !== null);
   let nextFallback = explicit.length ? Math.max(...explicit) + 1 : 0;
-  return items
+  const normalized = items
     .map((item, index) => ({
       ...item,
       sortOrder: validSubscriptionSortOrder(item.sortOrder) ?? (explicit.length ? nextFallback++ : index),
@@ -172,6 +172,7 @@ function normalizeSubscriptions(value) {
     }))
     .sort((left, right) => left.sortOrder - right.sortOrder || left.originalIndex - right.originalIndex)
     .map(({ originalIndex, ...item }) => item);
+  return ensureSubscriptionAccountTags(normalized);
 }
 
 function normalizeHttpUrl(value) {
@@ -285,6 +286,7 @@ function mergeState(input) {
   const settings = {
     ...DEFAULT_STATE.settings,
     ...sourceSettings,
+    engineMode: normalizeEngineMode(sourceSettings.engineMode, sourceSettings.enginePath),
     theme,
     searchEngines: normalizeSearchEngines(sourceSettings.searchEngines),
     bookmarkBarAlwaysVisible: sourceSettings.bookmarkBarAlwaysVisible === true,
@@ -322,17 +324,27 @@ function mergeState(input) {
   settings.agentProfileOverrides = settings.agentProfileOverrides
     && typeof settings.agentProfileOverrides === 'object'
     && !Array.isArray(settings.agentProfileOverrides)
-    ? Object.fromEntries(Object.entries(settings.agentProfileOverrides).filter(([, value]) => (
-      value && typeof value === 'object' && !Array.isArray(value)
-    )))
+    ? Object.fromEntries(Object.entries(settings.agentProfileOverrides)
+      .filter(([, value]) => value && typeof value === 'object' && !Array.isArray(value))
+      .map(([profileId, value]) => {
+        const override = { ...value };
+        for (const key of REMOVED_JEV_SETTING_KEYS) delete override[key];
+        return [profileId, override];
+      }))
     : {};
-  settings.jevAutoJudgeEnabled = settings.jevAutoJudgeEnabled !== false;
-  settings.jevProvider = settings.jevProvider === 'custom' ? 'custom' : 'typesafe';
-  settings.jevBaseUrl = typeof settings.jevBaseUrl === 'string' ? settings.jevBaseUrl.trim() : DEFAULT_STATE.settings.jevBaseUrl;
-  settings.jevModel = typeof settings.jevModel === 'string' ? settings.jevModel.trim() : DEFAULT_STATE.settings.jevModel;
+  for (const key of REMOVED_JEV_SETTING_KEYS) delete settings[key];
   return {
     version: 1,
-    profiles: records(source.profiles),
+    profiles: records(source.profiles).map((profile) => {
+      const profileEngineMode = String(profile.engineMode || '').trim().toLowerCase();
+      return {
+        ...profile,
+        engineMode: profileEngineMode === 'electron' || profileEngineMode === 'external'
+          ? profileEngineMode
+          : settings.engineMode,
+        browsingHistory: normalizeBrowsingHistory(profile.browsingHistory),
+      };
+    }),
     nodes: records(source.nodes),
     subscriptions: normalizeSubscriptions(source.subscriptions),
     extensions: records(source.extensions),
@@ -347,7 +359,14 @@ function createStore(filePath) {
   function load() {
     try {
       const text = fs.readFileSync(filePath, 'utf8');
-      state = mergeState(JSON.parse(text));
+      const source = JSON.parse(text);
+      state = mergeState(source);
+      const sourceSettings = source?.settings && typeof source.settings === 'object' ? source.settings : {};
+      const hasLegacyJevSettings = REMOVED_JEV_SETTING_KEYS.some((key) => Object.prototype.hasOwnProperty.call(sourceSettings, key))
+        || Object.values(sourceSettings.agentProfileOverrides || {}).some((override) => (
+          override && typeof override === 'object' && REMOVED_JEV_SETTING_KEYS.some((key) => Object.prototype.hasOwnProperty.call(override, key))
+        ));
+      if (hasLegacyJevSettings) save(state);
     } catch (error) {
       if (error.code !== 'ENOENT') {
         state = clone(DEFAULT_STATE);

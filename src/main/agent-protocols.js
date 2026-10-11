@@ -58,19 +58,6 @@ const TOOL_DEFINITIONS = Object.freeze([
     parameters: Object.freeze({ type: 'object', properties: {}, additionalProperties: false }),
   }),
   Object.freeze({
-    name: 'jev_decide',
-    description: '调用已配置的 JEV 判断模型，对结构化状态和问题集合给出答案；不执行浏览器动作。',
-    parameters: Object.freeze({
-      type: 'object',
-      properties: {
-        state: { type: 'object', description: '需要判断的结构化当前状态。' },
-        questions: { type: 'object', description: '问题键到问题文本的映射。', minProperties: 1, additionalProperties: { type: 'string' } },
-      },
-      required: ['state', 'questions'],
-      additionalProperties: false,
-    }),
-  }),
-  Object.freeze({
     name: 'browser_read_page',
     description: '读取当前活动网页的标题、地址、描述和正文。',
     parameters: Object.freeze({ type: 'object', properties: {}, additionalProperties: false }),
@@ -342,12 +329,6 @@ const TOOL_DEFINITIONS = Object.freeze([
     }),
   }),
 ]);
-
-function agentToolsForJev(jevAutoJudgeEnabled = true) {
-  return jevAutoJudgeEnabled === false
-    ? TOOL_DEFINITIONS.filter((tool) => tool.name !== 'jev_decide')
-    : TOOL_DEFINITIONS;
-}
 
 function protocolDefinition(value) {
   const source = String(value || '').trim().toLowerCase();
@@ -790,7 +771,8 @@ function parseAgentResponse(protocol, payload) {
         toolCalls.push({ id: toolCallId(block.id, index), name: String(block.name || ''), arguments: block.input || {} });
       }
     }
-    return { text: texts.join(''), toolCalls, finishReason: root.stop_reason || '', usage: root.usage || null };
+    const finishReason = root.stop_reason || '';
+    return { text: texts.join(''), toolCalls, finishReason, truncated: isOutputTruncated(protocol, finishReason), usage: root.usage || null };
   }
   if (kind === 'google-gemini') {
     const parts = root.candidates?.[0]?.content?.parts || [];
@@ -804,7 +786,8 @@ function parseAgentResponse(protocol, payload) {
         arguments: part.functionCall.args || {},
       });
     });
-    return { text: texts.join(''), toolCalls, finishReason: root.candidates?.[0]?.finishReason || '', usage: root.usageMetadata || null };
+    const finishReason = root.candidates?.[0]?.finishReason || '';
+    return { text: texts.join(''), toolCalls, finishReason, truncated: isOutputTruncated(protocol, finishReason), usage: root.usageMetadata || null };
   }
 
   if (kind === 'openai-responses') {
@@ -835,11 +818,13 @@ function parseAgentResponse(protocol, payload) {
     const responseItems = Array.isArray(root.output) ? root.output : [];
     // Responses requires the model output items to be fed back verbatim on the
     // next request before any function_call_output items are appended.
+    const finishReason = root.incomplete_details?.reason || root.status || '';
     const response = {
       text: texts.join(''),
       toolCalls,
       responseItems,
-      finishReason: root.incomplete_details?.reason || root.status || '',
+      finishReason,
+      truncated: isOutputTruncated(protocol, finishReason),
       usage: root.usage || null,
     };
     return response;
@@ -856,7 +841,18 @@ function parseAgentResponse(protocol, payload) {
       ? [{ id: toolCallId('', 0), name: String(message.function_call.name || ''), arguments: message.function_call.arguments || {} }]
       : [];
   const text = typeof message.content === 'string' ? message.content : textFromParts(message.content);
-  return { text, toolCalls, finishReason: root.choices?.[0]?.finish_reason || '', usage: root.usage || null };
+  const finishReason = root.choices?.[0]?.finish_reason || '';
+  return { text, toolCalls, finishReason, truncated: isOutputTruncated(protocol, finishReason), usage: root.usage || null };
+}
+
+function isOutputTruncated(protocol, finishReason) {
+  const kind = protocolDefinition(protocol).id;
+  const reason = String(finishReason || '').trim().toLowerCase().replace(/[-\s]/g, '_');
+  if (kind === 'openai-chat-completions') return reason === 'length' || reason === 'max_tokens';
+  if (kind === 'openai-responses') return reason === 'max_output_tokens' || reason === 'length' || reason === 'incomplete_max_output_tokens';
+  if (kind === 'anthropic-messages') return reason === 'max_tokens' || reason === 'length';
+  if (kind === 'google-gemini') return reason === 'max_tokens' || reason === 'maxtokens' || reason === 'max_output_tokens';
+  return false;
 }
 
 function estimateMessageTokens(message) {
@@ -919,7 +915,6 @@ module.exports = {
   REASONING_EFFORTS,
   PROTOCOLS,
   TOOL_DEFINITIONS,
-  agentToolsForJev,
   authHeaders,
   buildAgentRequest,
   endpointFor,
@@ -928,6 +923,7 @@ module.exports = {
   normalizeBaseUrl,
   normalizeProtocol,
   normalizeReasoningEffort,
+  isOutputTruncated,
   parseAgentResponse,
   reasoningEffortFallbacks,
   resolveReasoningEffort,

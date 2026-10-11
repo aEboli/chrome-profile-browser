@@ -28,7 +28,7 @@ test('node workbench exposes edit and detail actions', () => {
   assert.match(rendererSource, /document\.addEventListener\("dblclick"/);
   assert.match(rendererSource, /function renderNodeDetails\(/);
   assert.match(managerHtml, /id="node-details-modal"/);
-  assert.match(managerHtml, /id="install-browser"/);
+  assert.doesNotMatch(managerHtml, /id="install-browser"/);
 });
 
 test('IP summaries keep natural address width and align metadata group gaps to it', () => {
@@ -95,12 +95,22 @@ test('profile editor locks stop-required fields at runtime and preserves their v
   }
   assert.match(rendererSource, /const PROFILE_CONFIG_LOCKED_STATUSES = new Set\([\s\S]*"starting", "stopping", "switching", "saving"/);
   assert.match(rendererSource, /function syncProfileConfigLock\(\)[\s\S]*field\.disabled = locked[\s\S]*trigger\.hidden = !locked/);
-  assert.match(rendererSource, /const nodeId = \$\("#profile-node"\)\.value/);
+  assert.match(rendererSource, /const connectionSelection = \$\("#profile-node"\)\.value/);
   assert.match(rendererSource, /const testIdentityOrigins = \$\("#profile-test-origins"\)\.value/);
   assert.match(rendererSource, /case "profile-config-locked":[\s\S]*showToast\("请先停止环境，再修改此项", "warn"\)/);
   assert.match(stylesSource, /\.profile-config-field\.is-locked/);
   assert.match(managerHtml, /id="profile-name" name="name"/);
   assert.match(managerHtml, /id="profile-homepage" name="homepage"/);
+});
+
+test('profile connection UI keeps fixed nodes and adds a distinct subscription-auto choice', () => {
+  assert.match(rendererSource, /option value="node:\$\{escapeHtml\(node\.id\)\}"/);
+  assert.match(rendererSource, /option value="subscription:\$\{escapeHtml\(subscription\.id\)\}"/);
+  assert.match(rendererSource, /data-connection-subscription-option/);
+  assert.match(rendererSource, /profile-connection-mode--\$\{profile\?\.connectionMode/);
+  assert.match(rendererSource, /function switchProfileSubscription\(/);
+  assert.match(mainSource, /profile:auto-failover/);
+  assert.match(fs.readFileSync(path.join(root, 'src', 'main', 'preload.js'), 'utf8'), /switchProfileSubscription/);
 });
 
 test('node editor exposes stored proxy credentials for correction', () => {
@@ -115,6 +125,8 @@ test('environment rows expose a check for the currently selected connection', ()
   assert.match(rendererSource, /data-action="check-profile-connection"/);
   assert.match(rendererSource, /测试当前节点/);
   assert.match(rendererSource, /checkProfileConnection/);
+  const profilesBody = rendererSource.slice(rendererSource.indexOf('function renderProfiles('), rendererSource.indexOf('function activeConnectionPicker('));
+  assert.match(profilesBody, /renderProfileConnectionPicker\(profile\)/);
   assert.match(rendererSource, /data-action="check-profile-connection"[\s\S]*?\$\{icon\("zap"\)\}/);
   assert.match(mainSource, /handle\('profile:check-connection'/);
   assert.match(mainSource, /async function checkProfileConnection\(/);
@@ -143,13 +155,14 @@ test('agent configuration has its own compact page and model connectivity action
   assert.match(managerHtml, /id="agent-environment-list"/);
   assert.match(managerHtml, /id="test-agent-connection"[^>]+aria-label="测试连通性"/);
   assert.match(managerHtml, /id="manager-agent-model-options"/);
-  assert.match(managerHtml, /id="manager-jev-enabled"[^>]+type="checkbox"/);
+  assert.doesNotMatch(managerHtml, /manager-jev|JEV 判断模型/);
   assert.doesNotMatch(managerHtml, /id="agent-management-heading"/);
   assert.match(rendererSource, /function renderAgentEnvironmentManagement\(/);
   assert.match(rendererSource, /agent-environment-target/);
   assert.match(rendererSource, /fetchAgentModels\(/);
   assert.match(rendererSource, /testAgentConnection\(/);
-  assert.match(rendererSource, /jevAutoJudgeEnabled: elements\.jevAutoJudgeEnabled\?\.checked === true/);
+  assert.match(rendererSource, /meta\.textContent = configured \? `\$\{protocol\} · \$\{configured\}`/);
+  assert.match(rendererSource, /plugin-statuses \.status-badge:nth-child\(2\)/);
   assert.match(mainSource, /handle\('agent:fetch-models'/);
   assert.match(mainSource, /handle\('agent:test-connection'/);
   assert.match(fs.readFileSync(path.join(root, 'src', 'main', 'preload.js'), 'utf8'), /fetchAgentModels/);

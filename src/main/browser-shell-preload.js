@@ -64,13 +64,11 @@ contextBridge.exposeInMainWorld('shellApi', {
     try { onRequestId?.(id); } catch { /* Cancellation is best effort. */ }
     return ipcRenderer.invoke('browser-shell:agent-models', { ...input, requestId: id });
   },
-  jevDecision: (input, onRequestId) => {
-    const id = requestId('agent-jev');
-    try { onRequestId?.(id); } catch { /* Request cancellation is best effort. */ }
-    return ipcRenderer.invoke('browser-shell:jev-decision', { ...input, requestId: id });
-  },
   getExtensions: () => ipcRenderer.invoke('browser-shell:get-extensions'),
   getSettings: () => ipcRenderer.invoke('browser-shell:get-settings'),
+  refreshConnection: () => ipcRenderer.invoke('browser-shell:refresh-connection'),
+  getConnectionRoutes: () => ipcRenderer.invoke('browser-shell:get-connection-routes'),
+  switchConnectionRoute: (input) => ipcRenderer.invoke('browser-shell:switch-connection-route', input),
   saveSettings: (settings) => ipcRenderer.invoke('browser-shell:save-settings', settings),
   getBookmarks: () => ipcRenderer.invoke('browser-shell:get-bookmarks'),
   getBookmarkFavicon: (bookmark) => ipcRenderer.invoke('browser-shell:get-bookmark-favicon', bookmark),
@@ -78,6 +76,12 @@ contextBridge.exposeInMainWorld('shellApi', {
   getCommonSites: () => ipcRenderer.invoke('browser-shell:get-common-sites'),
   recordCommonSiteVisit: (url) => ipcRenderer.invoke('browser-shell:record-common-site-visit', url),
   getSearchHistory: () => ipcRenderer.invoke('browser-shell:get-search-history'),
+  getHistory: () => ipcRenderer.invoke('browser-shell:get-history'),
+  findPage: (input) => ipcRenderer.invoke('browser-shell:find-page', input),
+  deleteHistory: (url) => ipcRenderer.invoke('browser-shell:delete-history', url),
+  clearHistory: () => ipcRenderer.invoke('browser-shell:clear-history'),
+  toggleFullscreen: () => ipcRenderer.invoke('browser-shell:fullscreen'),
+  showTabMenu: (input) => ipcRenderer.invoke('browser-shell:tab-menu', input),
   recordSearchQuery: (query) => ipcRenderer.invoke('browser-shell:record-search-query', query),
   getPasswordSuggestions: (input) => ipcRenderer.invoke('browser-shell:get-password-suggestions', input),
   revealPasswordEntry: (input) => ipcRenderer.invoke('browser-shell:reveal-password', input),
@@ -86,6 +90,7 @@ contextBridge.exposeInMainWorld('shellApi', {
   getLocalListeners: () => ipcRenderer.invoke('browser-shell:get-local-listeners'),
   openDownload: (input) => ipcRenderer.invoke('browser-shell:open-download', input),
   cancelDownload: (downloadId) => ipcRenderer.invoke('browser-shell:cancel-download', downloadId),
+  controlDownload: (input) => ipcRenderer.invoke('browser-shell:control-download', input),
   clearDownloads: () => ipcRenderer.invoke('browser-shell:clear-downloads'),
   clearBrowsingData: () => ipcRenderer.invoke('browser-shell:clear-browsing-data'),
   stopLocalListener: (input) => ipcRenderer.invoke('browser-shell:stop-local-listener', input),
@@ -149,6 +154,30 @@ contextBridge.exposeInMainWorld('shellApi', {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('browser-shell:open-new-tab', listener);
     return () => ipcRenderer.removeListener('browser-shell:open-new-tab', listener);
+  },
+  onBrowserCommand: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('browser-shell:command', listener);
+    return () => ipcRenderer.removeListener('browser-shell:command', listener);
+  },
+  onTabAction: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('browser-shell:tab-action', listener);
+    return () => ipcRenderer.removeListener('browser-shell:tab-action', listener);
+  },
+  onHistoryUpdated: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('browser-shell:history-updated', listener);
+    return () => ipcRenderer.removeListener('browser-shell:history-updated', listener);
+  },
+  onFindResult: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('browser-shell:find-result', listener);
+    return () => ipcRenderer.removeListener('browser-shell:find-result', listener);
   },
   onTeardown: (callback) => {
     if (typeof callback !== 'function') return () => {};

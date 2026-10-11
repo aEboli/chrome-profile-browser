@@ -1,7 +1,7 @@
 {
   "name": "chrome-profile-browser",
-  "version": "0.1.134",
-  "appVersion": "0.1.134",
+  "version": "0.1.144",
+  "appVersion": "0.1.144",
   "private": true,
   "author": "aEboli",
   "description": "本地优先的 Chromium profile 与代理节点工作台",
@@ -23,6 +23,7 @@
     "dist:mac:arm64": "electron-builder --mac --arm64"
   },
   "dependencies": {
+    "proxy-chain": "3.0.0",
     "qrcode": "^1.5.4",
     "undici": "^7.29.1",
     "yaml": "2.9.1"

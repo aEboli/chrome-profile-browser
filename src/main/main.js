@@ -64,6 +64,13 @@ const {
 } = require('./proxy-parser');
 const { parseV2raySubscriptionContent } = require('./v2ray-parser');
 const { runBoundedBatch } = require('./batch-runner');
+const {
+  deleteBrowsingHistoryEntry,
+  normalizeBrowsingHistory,
+  recordBrowsingHistory,
+} = require('./browsing-history');
+const { browserShortcutCommand } = require('./browser-shortcuts');
+const { classifyProfileWindowOpen, classifyProfilePreflightNavigation, isAuthorizationPopupRequest, isBlankWindowUrl } = require('./profile-window-navigation');
 const { cleanupRuntime, startCore, terminate: terminateCore, safeCorePath } = require('./core-manager');
 const { startSingbox } = require('./singbox-manager');
 const { normalizeCore, resolveCorePath } = require('./core-registry');
@@ -110,9 +117,20 @@ const {
   sanitizeSubscriptionMetadata,
 } = require('./subscription-meta');
 const {
+  nextSubscriptionAccountTag,
   normalizeSubscriptionName,
-  resolveSubscriptionName,
+  resolveSubscriptionNameDetails,
 } = require('./subscription-name');
+const {
+  removeSubscriptionData,
+  subscriptionNodeIds,
+} = require('./subscription-lifecycle');
+const {
+  rankSubscriptionRoutes,
+  supportedSubscriptionNodes,
+} = require('./profile-subscription-routing');
+const { shouldConfirmProfileLaunchIpChange } = require('./profile-launch-policy');
+const { buildUpstreamProxyUrl, createProfileProxyRouter } = require('./profile-proxy-router');
 const {
   createTestIdentityId,
   createTestIdentityRequestHandler,
@@ -130,13 +148,13 @@ const {
   DEFAULT_AGENT_SETTINGS,
   REASONING_EFFORTS: AGENT_REASONING_EFFORTS,
   PROTOCOLS: AGENT_PROTOCOLS,
-  agentToolsForJev,
   authHeaders: agentAuthHeaders,
   buildAgentRequest,
   extractErrorMessage: extractAgentErrorMessage,
   normalizeBaseUrl: normalizeAgentBaseUrl,
   normalizeProtocol: normalizeAgentProtocol,
   normalizeReasoningEffort,
+  isOutputTruncated: isAgentOutputTruncated,
   modelsEndpointFor: agentModelsEndpointFor,
   parseAgentResponse,
   reasoningEffortFallbacks,
@@ -144,16 +162,10 @@ const {
 } = require('./agent-protocols');
 const { createAgentRequestRegistry } = require('./agent-request-lifecycle');
 const {
-  DEFAULT_JEV_SETTINGS,
-  PROVIDERS: JEV_PROVIDERS,
-  buildJevRequest,
-  extractErrorMessage: extractJevErrorMessage,
-  normalizeBaseUrl: normalizeJevBaseUrl,
-  normalizeProvider: normalizeJevProvider,
-  parseJevResponse,
-} = require('./jev-protocols');
-const {
   buildExternalEngineArgs,
+  discoverChromeExecutable,
+  normalizeEngineMode,
+  resolveExternalEnginePath,
   sameEnginePath,
   validateEnginePath,
   waitForProcessSpawn,
@@ -178,15 +190,21 @@ const profileWindows = new Map();
 const externalProcesses = new Map();
 const profileRuntimeModes = new Map();
 const coreProcesses = new Map();
+const retiredProfileCoreProcesses = new Map();
+const profileProxyRouters = new Map();
 const profileAuth = new Map();
 const profileSessions = new Map();
 const profileSessionRefs = new Map();
 const profileIdentityHooks = new Map();
 const profileTrafficTrackers = new Map();
 const profileGuests = new Map();
+const profileFindRequests = new WeakMap();
+const profilePopupWindows = new Map();
 const activeProfileWindows = new Set();
 const retiredProfileWindows = new Set();
 const profileLaunches = new Map();
+const profileAutoFailovers = new Map();
+const profileConnectionRefreshes = new Map();
 const profileLaunchConfirmations = new Map();
 const pendingUiConfirmations = new Map();
 let nextUiConfirmationId = 0;
@@ -219,6 +237,7 @@ const CONNECTION_CHECK_INTERVAL_MS = 60_000;
 const CORE_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const CONNECTION_CHECK_TIMEOUT_MS = 7000;
 const CONNECTION_CHECK_BATCH_CONCURRENCY = 3;
+const SUBSCRIPTION_ROUTE_CHECK_CONCURRENCY = 10;
 const PROFILE_LAUNCH_CONFIRMATION_TTL_MS = 2 * 60 * 1000;
 const DIRECT_CONNECTION_TARGET = Object.freeze({ host: 'example.com', port: 80 });
 const DEFAULT_SEARCH_ENGINE_URL = 'https://www.google.com/search?q=%s';
@@ -248,8 +267,10 @@ const MAX_AGENT_API_LENGTH = 256;
 const MAX_AGENT_SUFFIX_LENGTH = 256;
 const MAX_AGENT_KEY_LENGTH = 4096;
 const MAX_AGENT_MODEL_LENGTH = 256;
-const MAX_JEV_MODEL_LENGTH = 256;
 const MAX_BOOKMARK_FAVICON_BYTES = 64 * 1024;
+const MAX_PAGE_FAVICON_HTML_BYTES = 512 * 1024;
+const MAX_PAGE_FAVICON_MANIFEST_BYTES = 128 * 1024;
+const MAX_PAGE_FAVICON_CANDIDATES = 12;
 const SECRET_CORE_KEYS = new Set(['uuid', 'password', 'publicKey', 'shortId', 'spiderX']);
 const COUNTRY_NAMES = Object.freeze({
   AE: '阿联酋', AT: '奥地利', AU: '澳大利亚', BE: '比利时', BR: '巴西',
@@ -717,6 +738,8 @@ function publicDownloadRecord(record) {
     totalBytes: record.totalBytes,
     startedAt: record.startedAt,
     completedAt: record.completedAt || null,
+    paused: record.paused === true,
+    canResume: record.canResume === true,
   };
 }
 
@@ -737,6 +760,7 @@ function isProfileDownloadPath(profileId, targetPath) {
 async function openProfileDownload(profileId, input = {}) {
   const record = downloadRecordFor(profileId, input?.id);
   if (!record || !isProfileDownloadPath(profileId, record.path)) throw new Error('下载记录不存在');
+  if (record.state !== 'completed') throw new Error('下载文件尚未完成');
   const action = String(input?.action || 'open').toLowerCase();
   if (action === 'folder') {
     shell.showItemInFolder(record.path);
@@ -755,9 +779,26 @@ function cancelProfileDownload(profileId, downloadId) {
   return { ok: true, id: safeText(downloadId) };
 }
 
+function controlProfileDownload(profileId, input) {
+  const entry = profileDownloadItems.get(safeText(input?.id));
+  const record = downloadRecordFor(profileId, input?.id);
+  if (!entry || entry.profileId !== safeProfileId(profileId) || !record) throw new Error('下载任务不存在');
+  if (input?.action === 'pause' && record.state === 'progressing' && !entry.item.isPaused()) {
+    entry.item.pause();
+  } else if (input?.action === 'resume' && (entry.item.isPaused() || entry.item.canResume())) {
+    entry.item.resume();
+  } else {
+    throw new Error('当前下载状态不支持此操作');
+  }
+  record.paused = entry.item.isPaused();
+  record.canResume = entry.item.canResume();
+  sendBrowserDownloads(profileId);
+  return { ok: true };
+}
+
 function clearCompletedProfileDownloads(profileId) {
   const key = safeProfileId(profileId);
-  const records = (profileDownloadRecords.get(key) || []).filter((record) => record.state === 'progressing');
+  const records = (profileDownloadRecords.get(key) || []).filter((record) => record.state === 'progressing' || record.canResume);
   profileDownloadRecords.set(key, records);
   sendBrowserDownloads(key);
   return { ok: true, downloads: records.map(publicDownloadRecord) };
@@ -1077,9 +1118,12 @@ function configureProfileSession(profileId, profileSession) {
     profileDownloadRecords.set(profileId, records.slice(0, 100));
     profileDownloadItems.set(record.id, { profileId, item });
     try { item.setSavePath(target); } catch { /* Chromium may have chosen a path already. */ }
-    const update = () => {
+    const update = (_event, currentState) => {
+      if (currentState) record.state = currentState;
       record.receivedBytes = Number(item.getReceivedBytes?.()) || record.receivedBytes;
       record.totalBytes = Number(item.getTotalBytes?.()) || record.totalBytes;
+      record.paused = record.state === 'progressing' && item.isPaused?.() === true;
+      record.canResume = !record.completedAt && item.canResume?.() === true;
       sendBrowserDownloads(profileId);
     };
     item.on('updated', update);
@@ -1334,31 +1378,15 @@ function resolvedAgentSettings(state, profileId = '') {
   };
 }
 
-function resolvedJevSettings(state, profileId = '') {
-  const source = resolvedAgentSettings(state, profileId);
-  const provider = normalizeJevProvider(source.jevProvider || DEFAULT_JEV_SETTINGS.provider);
-  return {
-    autoJudgeEnabled: source.jevAutoJudgeEnabled !== false,
-    provider,
-    baseUrl: safeText(source.jevBaseUrl) || (provider === 'typesafe' ? DEFAULT_JEV_SETTINGS.baseUrl : ''),
-    model: safeText(source.jevModel) || DEFAULT_JEV_SETTINGS.model,
-    token: revealSecret(source.jevKey) || revealSecret(source.jevToken),
-  };
-}
-
 function publicSettings(state) {
   const source = state?.settings && typeof state.settings === 'object' ? state.settings : {};
   const {
     agentKey: _agentKey,
     agentToken: _agentToken,
-    jevKey: _jevKey,
-    jevToken: _jevToken,
     agentProfileOverrides: _agentProfileOverrides,
     ...rest
   } = source;
   const storedAgentToken = revealSecret(source.agentKey) || revealSecret(source.agentToken);
-  const storedJevToken = revealSecret(source.jevKey) || revealSecret(source.jevToken);
-  const jevProvider = normalizeJevProvider(source.jevProvider || DEFAULT_JEV_SETTINGS.provider);
   const baseUrl = safeText(source.agentBaseUrl || source.agentApiUrl);
   const model = safeText(source.agentModel || source.agentApi);
   return {
@@ -1383,10 +1411,6 @@ function publicSettings(state) {
     agentProfileConfigIds: Object.keys(source.agentProfileOverrides || {})
       .map((item) => safeProfileId(item))
       .filter(Boolean),
-    jevProvider,
-    jevBaseUrl: safeText(source.jevBaseUrl) || (jevProvider === 'typesafe' ? DEFAULT_JEV_SETTINGS.baseUrl : ''),
-    jevModel: safeText(source.jevModel) || DEFAULT_JEV_SETTINGS.model,
-    jevKeySet: Boolean(storedJevToken),
     searchEngineUrl: safeText(source.searchEngineUrl) || DEFAULT_SEARCH_ENGINE_URL,
     agentKeySet: Boolean(storedAgentToken),
     agentTokenSet: Boolean(storedAgentToken),
@@ -1397,7 +1421,6 @@ function publicBrowserSettings(state, profileId = '') {
   const settings = publicSettings(state);
   const resolved = resolvedAgentSettings(state, profileId);
   const resolvedAgentToken = revealSecret(resolved.agentKey) || revealSecret(resolved.agentToken);
-  const resolvedJevToken = revealSecret(resolved.jevKey) || revealSecret(resolved.jevToken);
   return {
     agentApiUrl: safeText(resolved.agentApiUrl),
     agentProtocolSuffix: safeText(resolved.agentProtocolSuffix),
@@ -1420,12 +1443,6 @@ function publicBrowserSettings(state, profileId = '') {
     agentSource: resolved.agentFromProfile ? 'profile' : settings.agentProfileScope === 'selected' ? 'selected' : 'global',
     agentProfileId: safeProfileId(profileId),
     agentProtocols: AGENT_PROTOCOLS.map(({ id, label }) => ({ id, label })),
-    jevProvider: normalizeJevProvider(resolved.jevProvider || DEFAULT_JEV_SETTINGS.provider),
-    jevBaseUrl: safeText(resolved.jevBaseUrl) || (normalizeJevProvider(resolved.jevProvider || DEFAULT_JEV_SETTINGS.provider) === 'typesafe' ? DEFAULT_JEV_SETTINGS.baseUrl : ''),
-    jevModel: safeText(resolved.jevModel) || DEFAULT_JEV_SETTINGS.model,
-    jevAutoJudgeEnabled: resolved.jevAutoJudgeEnabled !== false,
-    jevKeySet: Boolean(resolvedJevToken),
-    jevProviders: JEV_PROVIDERS.map(({ id, label, defaultBaseUrl }) => ({ id, label, defaultBaseUrl })),
     searchEngineUrl: settings.searchEngineUrl,
     searchEngines: normalizeSearchEngines(settings.searchEngines),
     bookmarkBarAlwaysVisible: settings.bookmarkBarAlwaysVisible === true,
@@ -1459,10 +1476,6 @@ async function confirmApiKeyRetention(label, sender) {
 
 async function confirmAgentKeyRetention(sender) {
   return confirmApiKeyRetention('Agent', sender);
-}
-
-async function confirmJevKeyRetention(sender) {
-  return confirmApiKeyRetention('JEV', sender);
 }
 
 async function prepareBrowserSettings(input, currentSettings, sender) {
@@ -1512,23 +1525,6 @@ async function prepareBrowserSettings(input, currentSettings, sender) {
   }
   if (settings.agentProfileIds !== undefined) {
     patch.agentProfileIds = normalizedAgentProfileIds(settings.agentProfileIds, store.get());
-  }
-  if (settings.jevProvider !== undefined) {
-    patch.jevProvider = normalizeJevProvider(boundedSettingText(settings.jevProvider, MAX_AGENT_API_LENGTH, 'JEV 提供方'));
-  }
-  if (settings.jevAutoJudgeEnabled !== undefined) {
-    patch.jevAutoJudgeEnabled = settings.jevAutoJudgeEnabled === true;
-  }
-  if (settings.jevBaseUrl !== undefined) {
-    const jevProvider = normalizeJevProvider(settings.jevProvider || current.jevProvider || DEFAULT_JEV_SETTINGS.provider);
-    patch.jevBaseUrl = normalizeJevBaseUrl(
-      boundedSettingText(settings.jevBaseUrl, MAX_AGENT_SETTING_LENGTH, 'JEV 接口地址'),
-      jevProvider,
-    );
-    if (jevProvider === 'custom' && !patch.jevBaseUrl) throw new Error('自定义 JEV 接口地址不能为空');
-  }
-  if (settings.jevModel !== undefined) {
-    patch.jevModel = boundedSettingText(settings.jevModel, MAX_JEV_MODEL_LENGTH, 'JEV 模型') || DEFAULT_JEV_SETTINGS.model;
   }
   if (settings.searchEngineUrl !== undefined) {
     patch.searchEngineUrl = normalizeSearchEngineUrl(settings.searchEngineUrl);
@@ -1604,30 +1600,7 @@ async function prepareBrowserSettings(input, currentSettings, sender) {
       agentKeyStatus = 'empty';
     }
   }
-  let jevKeyStatus = 'unchanged';
-  const hasJevToken = Object.prototype.hasOwnProperty.call(settings, 'jevToken')
-    || Object.prototype.hasOwnProperty.call(settings, 'jevKey');
-  if (hasJevToken) {
-    const key = boundedSettingText(
-      Object.prototype.hasOwnProperty.call(settings, 'jevToken') ? settings.jevToken : settings.jevKey,
-      MAX_AGENT_KEY_LENGTH,
-      'JEV Token',
-    );
-    if (key) {
-      if (await confirmJevKeyRetention(sender)) {
-        patch.jevKey = protectSecret(key);
-        jevKeyStatus = 'retained';
-      } else {
-        jevKeyStatus = 'not-retained';
-      }
-    } else if (settings.clearJevKey === true || settings.clearJevToken === true) {
-      patch.jevKey = '';
-      jevKeyStatus = 'cleared';
-    } else if (!revealSecret(current.jevKey)) {
-      jevKeyStatus = 'empty';
-    }
-  }
-  return { patch, agentKeyStatus, jevKeyStatus };
+  return { patch, agentKeyStatus };
 }
 
 function hydrateNode(node) {
@@ -1713,6 +1686,7 @@ function publicCoreInfo(kind, state) {
 
 function publicState() {
   const state = store.get();
+  const engineMode = normalizeEngineMode(state.settings.engineMode, state.settings.enginePath);
   const passwordProfileIds = new Set(state.profiles.map((profile) => profile?.id).filter(Boolean));
   const xray = publicCoreInfo('xray', state);
   const singbox = publicCoreInfo('singbox', state);
@@ -1752,10 +1726,13 @@ function publicState() {
     },
     coreUpdates: coreUpdateState.map((update) => ({ ...update })),
     engine: {
-      mode: safeText(state.settings.enginePath) ? 'external' : 'electron',
+      mode: engineMode,
       configured: Boolean(safeText(state.settings.enginePath)),
       path: safeText(state.settings.enginePath),
-      version: safeText(state.settings.engineVersion) || (safeText(state.settings.enginePath) ? '' : safeText(process.versions.chrome)),
+      autoDiscoveredPath: safeText(state.settings.enginePath) ? '' : discoverChromeExecutable(),
+      version: engineMode === 'external'
+        ? safeText(state.settings.engineVersion)
+        : safeText(process.versions.chrome),
       updatedAt: safeText(state.settings.engineInstalledAt),
     },
     engineUpdate: browserUpdateState ? { ...browserUpdateState } : null,
@@ -1763,6 +1740,7 @@ function publicState() {
       const {
         newTabSiteVisits: _newTabSiteVisits,
         searchHistory: _searchHistory,
+        browsingHistory: _browsingHistory,
         ...publicProfile
       } = profile;
       return {
@@ -1787,12 +1765,15 @@ function publicSubscription(item, state = store.get()) {
   return {
     id: sourceId,
     name: safeText(item?.name, '订阅'),
+    accountTag: safeText(item?.accountTag),
+    nameSource: safeText(item?.nameSource, 'default'),
     sortOrder: parseSubscriptionSortOrder(item?.sortOrder, { allowMissing: true }) ?? 0,
     source: sanitizeSource(item?.source),
     nodeCount,
     availableNodeCount: nodeCount - unsupportedNodeCount,
     unsupportedNodeCount,
     lastUpdatedAt: safeText(item?.lastUpdatedAt),
+    lastRefreshAttemptAt: safeText(item?.lastRefreshAttemptAt),
     status: safeText(item?.status, 'unknown'),
     error: safeText(item?.error),
     metadata: sanitizeSubscriptionMetadata(item?.metadata),
@@ -1943,6 +1924,8 @@ function publicBrowserExtensions(profileId) {
         name: safeText(record.name, '未命名插件'),
         version: safeText(record.version, '未知版本'),
         ...permissionDetails,
+        requiresUserScripts: permissionDetails.permissions.includes('userScripts')
+          || permissionDetails.optionalPermissions.includes('userScripts'),
         iconDataUrl: extensionIconDataUrl(record.path, true),
         panels,
         hasPanel: Boolean(panels.popup || panels.sidePanel || panels.options),
@@ -2052,12 +2035,7 @@ function storedAgentConnection(profileId = '') {
     maxSteps: Number.isSafeInteger(Number(settings.agentMaxSteps)) && Number(settings.agentMaxSteps) >= 0
       ? Number(settings.agentMaxSteps) : DEFAULT_AGENT_SETTINGS.maxSteps,
     reasoningEffort: safeAgentReasoningEffort(settings.agentReasoningEffort),
-    jevAutoJudgeEnabled: settings.jevAutoJudgeEnabled !== false,
   };
-}
-
-function storedJevConnection(profileId = '') {
-  return resolvedJevSettings(store?.get?.() || {}, profileId);
 }
 
 async function readAgentResponseBody(response) {
@@ -2155,7 +2133,7 @@ async function requestAgentModel(profileId, input, cancelSignal) {
       ...connection,
       reasoningEffort,
       messages: trimmed,
-      tools: input?.finalize === true ? [] : agentToolsForJev(connection.jevAutoJudgeEnabled),
+      tools: input?.finalize === true ? [] : undefined,
     });
     const body = JSON.stringify(request.body);
     const controller = new AbortController();
@@ -2221,6 +2199,7 @@ async function consumeAgentStream(response, protocol, onEvent) {
     toolCalls: [],
     responseItems: [],
     finishReason: '',
+    truncated: false,
     usage: null,
   };
   const toolByKey = new Map();
@@ -2256,7 +2235,10 @@ async function consumeAgentStream(response, protocol, onEvent) {
         const tool = ensureTool(call.index ?? index, { id: call.id, name: call.function?.name });
         if (call.function?.arguments) tool.arguments += String(call.function.arguments);
       }
-      if (choice.finish_reason) state.finishReason = String(choice.finish_reason);
+      if (choice.finish_reason) {
+        state.finishReason = String(choice.finish_reason);
+        state.truncated = isAgentOutputTruncated(kind, state.finishReason);
+      }
       if (payload.usage) state.usage = payload.usage;
       return;
     }
@@ -2270,7 +2252,9 @@ async function consumeAgentStream(response, protocol, onEvent) {
       if (type === 'response.output_item.added' && payload.item?.type === 'function_call') {
         ensureTool(payload.item.call_id || payload.item.id || payload.output_index, payload.item);
       }
-      if (type === 'response.completed' || payload.response?.output) responsePayload = payload.response || payload;
+      if (type === 'response.completed' || type === 'response.incomplete' || payload.response?.output) {
+        responsePayload = payload.response || payload;
+      }
       if (payload.response?.usage || payload.usage) state.usage = payload.response?.usage || payload.usage;
       return;
     }
@@ -2289,6 +2273,7 @@ async function consumeAgentStream(response, protocol, onEvent) {
       }
       if (type === 'message_delta') {
         state.finishReason = String(payload.delta?.stop_reason || state.finishReason);
+        state.truncated = isAgentOutputTruncated(kind, state.finishReason);
         state.usage = payload.usage || state.usage;
       }
       return;
@@ -2302,7 +2287,10 @@ async function consumeAgentStream(response, protocol, onEvent) {
           if (part.functionCall.args) tool.arguments = JSON.stringify(part.functionCall.args);
         }
       }
-      if (candidate.finishReason) state.finishReason = String(candidate.finishReason);
+      if (candidate.finishReason) {
+        state.finishReason = String(candidate.finishReason);
+        state.truncated = isAgentOutputTruncated(kind, state.finishReason);
+      }
     }
     if (payload.usageMetadata) state.usage = payload.usageMetadata;
   };
@@ -2354,6 +2342,7 @@ async function consumeAgentStream(response, protocol, onEvent) {
     if (parsed.toolCalls?.length) state.toolCalls = parsed.toolCalls;
     state.responseItems = parsed.responseItems || [];
     state.finishReason = parsed.finishReason || state.finishReason;
+    state.truncated = parsed.truncated || state.truncated;
     state.usage = parsed.usage || state.usage;
   }
   state.toolCalls = state.toolCalls.map((call, index) => ({
@@ -2390,7 +2379,7 @@ async function requestAgentModelStream(profileId, input, onEvent, cancelSignal) 
       ...connection,
       reasoningEffort,
       messages: trimmed,
-      tools: input?.finalize === true ? [] : agentToolsForJev(connection.jevAutoJudgeEnabled),
+      tools: input?.finalize === true ? [] : undefined,
       stream: true,
     });
     const body = JSON.stringify(request.body);
@@ -2426,44 +2415,6 @@ async function requestAgentModelStream(profileId, input, onEvent, cancelSignal) 
   throw lastReasoningError || new Error('Agent 思考等级不受当前模型支持');
 }
 
-async function requestJevDecision(profileId, input, cancelSignal) {
-  const connection = storedJevConnection(profileId);
-  if (!connection.autoJudgeEnabled) throw new Error('请先在 Agent 配置中启用 JEV 模型');
-  if (!connection.token) throw new Error('请先在 Agent 配置中保存 JEV Key');
-  const request = buildJevRequest({
-    ...connection,
-    state: input?.state,
-    questions: input?.questions,
-  });
-  const body = JSON.stringify(request.body);
-  const controller = new AbortController();
-  const unbindCancel = bindAgentAbortSignal(controller, cancelSignal);
-  try {
-    const response = await fetch(request.url, {
-      method: 'POST',
-      headers: request.headers,
-      body,
-      signal: controller.signal,
-    });
-    const responseText = await readAgentResponseBody(response);
-    let payload;
-    try {
-      payload = responseText ? JSON.parse(responseText) : {};
-    } catch {
-      payload = { message: responseText.slice(0, 2000) };
-    }
-    if (!response.ok) {
-      const detail = extractJevErrorMessage(payload) || response.statusText || '未知错误';
-      throw new Error(`JEV 接口返回 ${response.status}：${detail}`);
-    }
-    return { ok: true, provider: request.provider, ...parseJevResponse(payload) };
-  } catch (error) {
-    if (error?.name === 'AbortError' && cancelSignal?.aborted) throw error;
-    throw error;
-  } finally {
-    unbindCancel();
-  }
-}
 
 function sessionExtensionApi(profileSession) {
   return profileSession?.extensions || profileSession;
@@ -2611,6 +2562,11 @@ async function openExtensionPanel(profileId, extensionId) {
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+  const panelNode = profileSessions.get(profileSession) || null;
+  panel.webContents.setWindowOpenHandler((details) => profileWindowOpenResponse(profileKey, details));
+  panel.webContents.on('did-create-window', (childWindow, details) => {
+    registerProfilePopupWindow(profileKey, childWindow, panelNode, details);
   });
   extensionPanelWindows.set(key, panel);
   panel.once('ready-to-show', () => {
@@ -3432,13 +3388,32 @@ function checkNodeConnection(nodeId) {
 async function checkProfileConnection(profileId) {
   const profileKey = safeProfileId(profileId);
   if (!profileKey) throw new Error('环境标识无效');
-  const state = store.get();
-  const profile = state.profiles.find((item) => item.id === profileKey);
+  let state = store.get();
+  let profile = state.profiles.find((item) => item.id === profileKey);
   if (!profile) throw new Error('环境不存在');
+  let precheckedRoute = null;
+  const currentRoute = profile.nodeId ? state.nodes.find((node) => node.id === profile.nodeId) : null;
+  if (profile.connectionMode === 'subscription'
+    && (!currentRoute || currentRoute.sourceId !== profile.subscriptionId)) {
+    precheckedRoute = (await checkSubscriptionRoutes(profile.subscriptionId))[0];
+    if (!precheckedRoute) throw new Error('所选订阅暂无可用节点');
+    store.update((next) => {
+      const current = next.profiles.find((item) => item.id === profileKey);
+      if (current?.connectionMode === 'subscription' && current.subscriptionId === profile.subscriptionId) {
+        current.nodeId = precheckedRoute.node.id;
+      }
+    });
+    broadcastState();
+    state = store.get();
+    profile = state.profiles.find((item) => item.id === profileKey);
+  }
   const nodeId = safeText(profile.nodeId);
   if (!nodeId) return checkDirectConnection();
-  if (!state.nodes.some((node) => node.id === nodeId)) throw new Error('所选节点不存在');
-  return checkNodeConnection(nodeId);
+  if (!state.nodes.some((node) => node.id === nodeId)) {
+    if (profile.connectionMode === 'subscription') throw new Error('所选订阅线路已更新，请重新检查');
+    throw new Error('所选节点不存在');
+  }
+  return precheckedRoute?.result || checkNodeConnection(nodeId);
 }
 
 function markNodeChecksPending(nodeIds) {
@@ -3452,7 +3427,7 @@ function markNodeChecksPending(nodeIds) {
   broadcastState();
 }
 
-async function checkNodeConnections(nodeIds) {
+async function checkNodeConnections(nodeIds, concurrency = CONNECTION_CHECK_BATCH_CONCURRENCY) {
   const requested = Array.isArray(nodeIds)
     ? [...new Set(nodeIds.map((value) => safeText(value)).filter(Boolean))]
     : [];
@@ -3478,8 +3453,347 @@ async function checkNodeConnections(nodeIds) {
         error: error instanceof Error ? error.message : String(error),
       };
     }
-  }, CONNECTION_CHECK_BATCH_CONCURRENCY);
+  }, concurrency);
   return { results, skipped };
+}
+
+async function checkSubscriptionRoutes(subscriptionId, excludedNodeIds = []) {
+  const idValue = safeText(subscriptionId);
+  if (!idValue || !store.get().subscriptions.some((item) => item.id === idValue)) {
+    throw new Error('所选订阅不存在，请重新选择');
+  }
+  const excluded = Array.isArray(excludedNodeIds) ? excludedNodeIds.map((value) => safeText(value)).filter(Boolean) : [];
+  const nodes = store.get().nodes;
+  const candidates = supportedSubscriptionNodes(nodes, idValue, excluded)
+    .filter((candidate) => nodes.find((node) => node.id === candidate.id)?.sourceId === idValue);
+  if (!candidates.length) return [];
+  const { results } = await checkNodeConnections(candidates.map((node) => node.id), SUBSCRIPTION_ROUTE_CHECK_CONCURRENCY);
+  return rankSubscriptionRoutes(store.get().nodes, idValue, results, excluded);
+}
+
+async function refreshBrowserConnection(profileId) {
+  const profileKey = safeProfileId(profileId);
+  if (!profileKey) throw new Error('环境标识无效');
+  const activeRun = profileConnectionRefreshes.get(profileKey);
+  if (activeRun) return activeRun;
+  if (profileAutoFailovers.has(profileKey) || profileStops.has(profileKey) || profileLaunches.has(profileKey)) {
+    throw new Error('环境连接正在切换，请稍后重试');
+  }
+
+  const run = (async () => {
+    let profile = store.get().profiles.find((item) => item.id === profileKey);
+    if (!profile) throw new Error('环境不存在');
+
+    if (profile.connectionMode === 'subscription') {
+      const subscriptionId = safeText(profile.subscriptionId);
+      if (!subscriptionId) throw new Error('当前环境未选择订阅');
+      const routes = await checkSubscriptionRoutes(subscriptionId);
+      profile = store.get().profiles.find((item) => item.id === profileKey);
+      if (!profile
+        || profile.connectionMode !== 'subscription'
+        || safeText(profile.subscriptionId) !== subscriptionId
+        || profileAutoFailovers.has(profileKey)
+        || profileStops.has(profileKey)
+        || profileLaunches.has(profileKey)) {
+        throw new Error('环境连接在检测期间发生变化，请重试');
+      }
+
+      const bestRoute = routes[0];
+      if (!bestRoute) {
+        sendBrowserConnectionDetails(profileKey);
+        return { mode: 'subscription', available: false, switched: false, nodeId: safeText(profile.nodeId) || null };
+      }
+
+      const currentNodeId = safeText(profile.nodeId);
+      let switched = false;
+      let route = bestRoute;
+      if (bestRoute.node.id !== currentNodeId) {
+        let switchError;
+        switched = false;
+        for (const candidate of routes) {
+          if (candidate.node.id === currentNodeId) continue;
+          try {
+            await switchProfileSubscriptionRoute(profileKey, subscriptionId, currentNodeId, candidate);
+            route = candidate;
+            switched = true;
+            break;
+          } catch (error) {
+            switchError = error;
+            applyNodeCheckResult(candidate.node.id, {
+              ok: false,
+              status: 'error',
+              phase: 'launch',
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        if (!switched) throw switchError || new Error('订阅可用线路无法启动，已保留当前线路');
+      } else {
+        sendBrowserConnectionDetails(profileKey);
+      }
+      return {
+        mode: 'subscription',
+        available: true,
+        switched,
+        nodeId: route.node.id,
+        nodeName: safeText(route.node.name),
+        latencyMs: route.latencyMs,
+        result: route.result || null,
+      };
+    }
+
+    if (profile.connectionMode === 'node') {
+      if (!profile.nodeId) throw new Error('当前环境未选择节点');
+      return { mode: 'node', available: true, switched: false, nodeId: profile.nodeId, result: await checkNodeConnection(profile.nodeId) };
+    }
+
+    return { mode: 'direct', available: true, switched: false, result: await checkDirectConnection() };
+  })();
+  profileConnectionRefreshes.set(profileKey, run);
+  try {
+    return await run;
+  } finally {
+    if (profileConnectionRefreshes.get(profileKey) === run) profileConnectionRefreshes.delete(profileKey);
+  }
+}
+
+function updateStoppedSubscriptionRoutesFromChecks(results) {
+  const checkedResults = Array.isArray(results) ? results.filter((result) => result?.nodeId) : [];
+  if (!checkedResults.length) return false;
+  const checkedIds = new Set(checkedResults.map((result) => safeText(result.nodeId)));
+  const state = store.get();
+  const subscriptionIds = new Set(state.nodes
+    .filter((node) => checkedIds.has(node.id) && node.sourceId)
+    .map((node) => node.sourceId));
+  const bestBySubscription = new Map();
+  for (const subscriptionId of subscriptionIds) {
+    const candidates = supportedSubscriptionNodes(state.nodes, subscriptionId)
+      .filter((candidate) => state.nodes.find((node) => node.id === candidate.id)?.sourceId === subscriptionId);
+    if (!candidates.length || !candidates.every((candidate) => checkedIds.has(candidate.id))) continue;
+    bestBySubscription.set(
+      subscriptionId,
+      rankSubscriptionRoutes(state.nodes, subscriptionId, checkedResults)[0]?.node.id || null,
+    );
+  }
+  if (!bestBySubscription.size) return false;
+  let changed = false;
+  store.update((next) => {
+    for (const profile of next.profiles) {
+      if (profile.connectionMode !== 'subscription'
+        || isProfileRunning(profile.id)
+        || !bestBySubscription.has(profile.subscriptionId)) continue;
+      const nodeId = bestBySubscription.get(profile.subscriptionId);
+      if (safeText(profile.nodeId) === safeText(nodeId)) continue;
+      profile.nodeId = nodeId;
+      changed = true;
+    }
+  });
+  if (changed) broadcastState();
+  return changed;
+}
+
+function notifyProfileAutoFailover(profileId, status, details = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('profile:auto-failover', {
+    profileId,
+    status,
+    nodeId: safeText(details.nodeId),
+    nodeName: safeText(details.nodeName),
+    latencyMs: Number.isFinite(Number(details.latencyMs)) ? Math.max(0, Math.round(Number(details.latencyMs))) : null,
+  });
+}
+
+function nodeUsesProxyCore(node) {
+  return Boolean(node?.requiresCore || node?.coreConfig);
+}
+
+async function startSubscriptionFailoverCore(profileId, node, state) {
+  const selectedCore = node.protocol === 'anytls' || node.coreConfig?.type === 'anytls'
+    ? 'singbox'
+    : normalizeCore(node.core || state.settings.defaultCore);
+  const runtime = await startProxyCore({
+    kind: selectedCore,
+    profileId: `route-${crypto.randomUUID()}`,
+    node,
+    state,
+  });
+  return { ...runtime, core: selectedCore, nodeId: node.id, exited: false };
+}
+
+async function switchProfileSubscriptionRoute(profileId, subscriptionId, currentNodeId, route) {
+  const router = profileProxyRouters.get(profileId);
+  if (!router) throw new Error('订阅自动转发器不可用');
+  const profile = store.get().profiles.find((item) => item.id === profileId);
+  if (!profile
+    || profile.connectionMode !== 'subscription'
+    || profile.subscriptionId !== subscriptionId
+    || safeText(profile.nodeId) !== currentNodeId
+    || !isProfileRunning(profileId)
+    || profileStops.has(profileId)) {
+    throw new Error('环境连接已变化');
+  }
+
+  let nextCoreRuntime = null;
+  let previousRoute;
+  try {
+    if (nodeUsesProxyCore(route.node)) {
+      nextCoreRuntime = await startSubscriptionFailoverCore(profileId, route.node, store.get());
+      if (!isCoreRuntimeAlive(nextCoreRuntime)) throw new Error('备用线路代理核心启动后立即退出');
+    }
+    const latestProfile = store.get().profiles.find((item) => item.id === profileId);
+    if (!latestProfile
+      || latestProfile.connectionMode !== 'subscription'
+      || latestProfile.subscriptionId !== subscriptionId
+      || safeText(latestProfile.nodeId) !== currentNodeId
+      || !isProfileRunning(profileId)
+      || profileProxyRouters.get(profileId) !== router
+      || profileStops.has(profileId)) {
+      throw new Error('环境正在停止');
+    }
+    const nextRoute = {
+      nodeId: route.node.id,
+      coreRuntime: nextCoreRuntime,
+      upstreamProxyUrl: buildUpstreamProxyUrl(route.node, nextCoreRuntime),
+    };
+
+    store.update((next) => {
+      const current = next.profiles.find((item) => item.id === profileId);
+      if (!current
+        || current.connectionMode !== 'subscription'
+        || current.subscriptionId !== subscriptionId
+        || safeText(current.nodeId) !== currentNodeId) {
+        throw new Error('环境连接已变化');
+      }
+      current.nodeId = route.node.id;
+      current.updatedAt = new Date().toISOString();
+      const routeIp = publicExitIp(route.result?.ipAddress);
+      if (routeIp) current.lastLaunchIp = routeIp;
+    });
+
+    previousRoute = router.setRoute(nextRoute);
+    if (nextCoreRuntime) trackProfileCoreRuntime(profileId, nextCoreRuntime);
+    else if (previousRoute?.coreRuntime && coreProcesses.get(profileId) === previousRoute.coreRuntime) {
+      coreProcesses.delete(profileId);
+    }
+  } catch (error) {
+    if (nextCoreRuntime) await stopTrackedCoreRuntime(profileId, nextCoreRuntime);
+    throw error;
+  }
+
+  broadcastState();
+  sendBrowserConnectionDetails(profileId);
+  const previousCoreRuntime = previousRoute?.coreRuntime;
+  if (previousCoreRuntime && previousCoreRuntime !== nextCoreRuntime) {
+    const retired = retiredProfileCoreProcesses.get(profileId) || new Set();
+    retired.add(previousCoreRuntime);
+    retiredProfileCoreProcesses.set(profileId, retired);
+    router.retireCoreRuntime(previousCoreRuntime);
+  }
+  return true;
+}
+
+async function autoFailoverProfile(profileId, failedNodeId) {
+  const profileKey = safeProfileId(profileId);
+  if (!profileKey) return false;
+  const activeRun = profileAutoFailovers.get(profileKey);
+  if (activeRun) return activeRun;
+  if (profileConnectionRefreshes.has(profileKey) || profileStops.has(profileKey) || profileLaunches.has(profileKey)) return false;
+  const initialNodeId = safeText(failedNodeId);
+  const run = (async () => {
+    let profile = store.get().profiles.find((item) => item.id === profileKey);
+    if (!profile
+      || profile.connectionMode !== 'subscription'
+      || !safeText(profile.subscriptionId)
+      || safeText(profile.nodeId) !== initialNodeId
+      || !isProfileRunning(profileKey)
+      || profileStops.has(profileKey)
+      || profileLaunches.has(profileKey)) return false;
+
+    const subscriptionId = safeText(profile.subscriptionId);
+    notifyProfileAutoFailover(profileKey, 'switching', { nodeId: initialNodeId });
+    let routes;
+    try {
+      routes = await checkSubscriptionRoutes(subscriptionId, initialNodeId ? [initialNodeId] : []);
+    } catch {
+      notifyProfileAutoFailover(profileKey, 'unavailable');
+      return false;
+    }
+    profile = store.get().profiles.find((item) => item.id === profileKey);
+    if (!profile
+      || profile.connectionMode !== 'subscription'
+      || profile.subscriptionId !== subscriptionId
+      || safeText(profile.nodeId) !== initialNodeId
+      || !isProfileRunning(profileKey)
+      || profileStops.has(profileKey)
+      || profileLaunches.has(profileKey)) {
+      notifyProfileAutoFailover(profileKey, 'cancelled');
+      return false;
+    }
+    if (!routes.length) {
+      notifyProfileAutoFailover(profileKey, 'unavailable');
+      return false;
+    }
+
+    for (const route of routes) {
+      profile = store.get().profiles.find((item) => item.id === profileKey);
+      if (!profile
+        || profile.connectionMode !== 'subscription'
+        || profile.subscriptionId !== subscriptionId
+        || safeText(profile.nodeId) !== initialNodeId) {
+        notifyProfileAutoFailover(profileKey, 'cancelled');
+        return false;
+      }
+      try {
+        await switchProfileSubscriptionRoute(profileKey, subscriptionId, initialNodeId, route);
+        notifyProfileAutoFailover(profileKey, 'switched', {
+          nodeId: route.node.id,
+          nodeName: route.node.name,
+          latencyMs: route.latencyMs,
+        });
+        return true;
+      } catch (error) {
+        applyNodeCheckResult(route.node.id, {
+          ok: false,
+          status: 'error',
+          phase: 'launch',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    notifyProfileAutoFailover(profileKey, 'unavailable', { nodeId: initialNodeId });
+    return false;
+  })();
+  profileAutoFailovers.set(profileKey, run);
+  try {
+    return await run;
+  } catch {
+    notifyProfileAutoFailover(profileKey, 'unavailable');
+    return false;
+  } finally {
+    if (profileAutoFailovers.get(profileKey) === run) profileAutoFailovers.delete(profileKey);
+  }
+}
+
+async function autoFailoverProfilesForNode(nodeId) {
+  const idValue = safeText(nodeId);
+  if (!idValue) return;
+  const profiles = store.get().profiles.filter((profile) => (
+    profile.connectionMode === 'subscription'
+    && safeText(profile.nodeId) === idValue
+    && isProfileRunning(profile.id)
+  ));
+  await Promise.all(profiles.map((profile) => autoFailoverProfile(profile.id, idValue)));
+}
+
+async function autoFailoverUnavailableSubscriptionProfiles() {
+  const state = store.get();
+  const unavailableStatuses = new Set(['error', 'failed', 'unreachable', 'invalid', 'aborted', 'unsupported']);
+  const profiles = state.profiles.filter((profile) => {
+    if (profile.connectionMode !== 'subscription' || !isProfileRunning(profile.id)) return false;
+    const node = state.nodes.find((item) => item.id === profile.nodeId);
+    return !node || unavailableStatuses.has(safeText(node.status).toLowerCase());
+  });
+  await Promise.all(profiles.map((profile) => autoFailoverProfile(profile.id, profile.nodeId || '')));
 }
 
 async function selectRandomExtensionStoreNode() {
@@ -3619,9 +3933,10 @@ async function refreshConnectionStatus() {
       node && selectedNodeIds.has(node.id)
       && node.supported !== false && node.status !== 'invalid' && node.status !== 'unsupported'
     ));
-    const hasDirectProfile = state.profiles.some((profile) => !profile.nodeId);
+    const hasDirectProfile = state.profiles.some((profile) => profile.connectionMode !== 'subscription' && !profile.nodeId);
     if (nodes.length) await checkNodeConnections(nodes.map((node) => node.id));
     if (hasDirectProfile) await checkDirectConnection();
+    await autoFailoverUnavailableSubscriptionProfiles();
   })();
   connectionMonitorRun = run;
   run.finally(() => {
@@ -3716,9 +4031,128 @@ function isProfileRunning(profileId) {
 
 function profileConnectionDetails(profileId) {
   const profile = store.get().profiles.find((item) => item.id === profileId);
-  if (!profile || profile.connectionMode !== 'node' || !profile.nodeId) return connectionDetails(null, directConnectionHealth);
+  if (!profile) return { ...connectionDetails(null, directConnectionHealth), mode: 'direct' };
+  if (profile.connectionMode === 'subscription') {
+    if (!profile.nodeId) return { country: '订阅自动', ip: '暂无可用线路', latency: '未测', label: '订阅自动', mode: 'subscription' };
+    const node = hydrateNode(store.get().nodes.find((item) => item.id === profile.nodeId));
+    return node
+      ? { ...connectionDetails(node), mode: 'subscription' }
+      : { country: '订阅自动', ip: '暂无可用线路', latency: '未测', label: '订阅自动', mode: 'subscription' };
+  }
+  if (profile.connectionMode !== 'node' || !profile.nodeId) {
+    return { ...connectionDetails(null, directConnectionHealth), mode: 'direct' };
+  }
   const node = hydrateNode(store.get().nodes.find((item) => item.id === profile.nodeId));
-  return connectionDetails(node);
+  return { ...connectionDetails(node), mode: 'node' };
+}
+
+function profileConnectionRouteOptions(profileId) {
+  const profileKey = safeProfileId(profileId);
+  if (!profileKey) throw new Error('环境标识无效');
+  const state = store.get();
+  const profile = state.profiles.find((item) => item.id === profileKey);
+  if (!profile) throw new Error('环境不存在');
+
+  const subscriptions = orderedSubscriptions(state.subscriptions);
+  const subscriptionIds = new Set(subscriptions.map((item) => safeText(item.id)).filter(Boolean));
+  const nodesBySubscription = new Map();
+  const manualNodes = [];
+  for (const rawNode of state.nodes) {
+    if (!rawNode || isSubscriptionInfoNode(rawNode) || isUnsupportedNode(rawNode)) continue;
+    const node = hydrateNode(rawNode);
+    if (node.sourceId && subscriptionIds.has(node.sourceId)) {
+      const nodes = nodesBySubscription.get(node.sourceId) || [];
+      nodes.push(node);
+      nodesBySubscription.set(node.sourceId, nodes);
+    } else {
+      manualNodes.push(node);
+    }
+  }
+
+  const mode = ['node', 'subscription'].includes(profile.connectionMode) ? profile.connectionMode : 'direct';
+  const currentNodeId = safeText(profile.nodeId);
+  const currentSubscriptionId = safeText(profile.subscriptionId);
+  const subscriptionLabel = (subscription, index) => {
+    const name = safeText(subscription?.name);
+    const base = name && name !== '在线订阅' ? name : `订阅${index + 1}`;
+    const accountTag = safeText(subscription?.accountTag);
+    return accountTag ? `${base} ${accountTag}` : base;
+  };
+  const nodeOption = (node, groupId, groupLabel) => {
+    const protocol = node.protocol ? String(node.protocol).toUpperCase() : '代理';
+    const address = node.host ? `${proxyHost(node.host)}${node.port ? `:${node.port}` : ''}` : '未填写地址';
+    const status = safeText(node.status).toLowerCase();
+    const statusLabel = ['ok', 'ready', 'available', 'healthy', 'reachable'].includes(status)
+      ? '可用'
+      : ['checking', 'pending'].includes(status)
+        ? '检测中'
+        : ['error', 'failed', 'unreachable', 'invalid', 'aborted'].includes(status)
+          ? '不可用'
+          : '未测';
+    const latency = connectionLatencyLabel(node);
+    return {
+      type: 'node',
+      nodeId: node.id,
+      groupId,
+      groupLabel,
+      label: safeText(node.name) || `${protocol} · ${address}`,
+      meta: `${protocol} · ${address}`,
+      ipAddress: nodeIp(node),
+      country: countryName(node.countryCode || node.country || node.countryName)
+        || safeText(node.country || node.countryName || node.countryCode)
+        || '未查询',
+      ipSource: safeText(node.ipSource || node.ipSourceLabel),
+      ipProperty: safeText(node.ipProperty || node.ipPropertyLabel),
+      latency: latency === '未测' ? statusLabel : latency,
+      status: status || 'unknown',
+      selected: mode === 'node' && currentNodeId === node.id,
+    };
+  };
+
+  const groups = [{
+    id: 'direct',
+    label: '系统直连',
+    options: [{
+      type: 'direct',
+      label: '系统直连',
+      meta: '系统默认网络路径',
+      selected: mode === 'direct',
+    }],
+  }];
+  subscriptions.forEach((subscription, index) => {
+    const subscriptionId = safeText(subscription.id);
+    if (!subscriptionId) return;
+    const label = subscriptionLabel(subscription, index);
+    const nodes = nodesBySubscription.get(subscriptionId) || [];
+    const activeNode = mode === 'subscription'
+      && currentSubscriptionId === subscriptionId
+      && currentNodeId
+      ? nodes.find((node) => node.id === currentNodeId)
+      : null;
+    const activeLatency = activeNode ? connectionLatencyLabel(activeNode) : '';
+    groups.push({
+      id: `subscription:${subscriptionId}`,
+      label,
+      options: [{
+        type: 'subscription',
+        subscriptionId,
+        label: `${label} · 订阅自动`,
+        meta: activeNode
+          ? `当前线路：${activeNode.name || '未命名节点'}${activeLatency !== '未测' ? ` · ${activeLatency}` : ''}`
+          : nodes.length ? '自动择优并在本订阅内故障切换' : '暂无可用节点',
+        selected: mode === 'subscription' && currentSubscriptionId === subscriptionId,
+        disabled: nodes.length === 0,
+      }, ...nodes.map((node) => nodeOption(node, `subscription:${subscriptionId}`, label))],
+    });
+  });
+  if (manualNodes.length) {
+    groups.push({
+      id: 'manual',
+      label: '手动节点',
+      options: manualNodes.map((node) => nodeOption(node, 'manual', '手动节点')),
+    });
+  }
+  return { profileId: profileKey, mode, groups };
 }
 
 function profileBookmarks(profileId) {
@@ -3798,6 +4232,37 @@ function importProfileBookmarks(profileId, sourceIds) {
   };
 }
 
+async function readProfileResponseBytes(response, maxBytes) {
+  const contentLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    try { await response.body?.cancel?.(); } catch { /* Ignore cleanup errors. */ }
+    return null;
+  }
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    const body = Buffer.from(await response.arrayBuffer());
+    return body.length > maxBytes ? null : body;
+  }
+  const chunks = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      length += chunk.length;
+      if (length > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  return length ? Buffer.concat(chunks, length) : null;
+}
+
 async function fetchBookmarkFavicon(profileSession, url) {
   try {
     const response = await profileSession.fetch(url, {
@@ -3808,33 +4273,116 @@ async function fetchBookmarkFavicon(profileSession, url) {
     if (!response.ok) return '';
     const mimeType = safeText(response.headers.get('content-type')).split(';')[0].toLowerCase();
     if (!/^image\/[a-z0-9.+-]+$/.test(mimeType)) return '';
-    const contentLength = Number(response.headers.get('content-length'));
-    if (Number.isFinite(contentLength) && contentLength > MAX_BOOKMARK_FAVICON_BYTES) return '';
-
-    const reader = response.body?.getReader();
-    if (!reader) {
-      const body = Buffer.from(await response.arrayBuffer());
-      if (!body.length || body.length > MAX_BOOKMARK_FAVICON_BYTES) return '';
-      return `data:${mimeType};base64,${body.toString('base64')}`;
-    }
-
-    const chunks = [];
-    let length = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      length += value.byteLength;
-      if (length > MAX_BOOKMARK_FAVICON_BYTES) {
-        await reader.cancel().catch(() => {});
-        return '';
-      }
-      chunks.push(Buffer.from(value));
-    }
-    if (!length) return '';
-    return `data:${mimeType};base64,${Buffer.concat(chunks, length).toString('base64')}`;
+    const body = await readProfileResponseBytes(response, MAX_BOOKMARK_FAVICON_BYTES);
+    if (!body) return '';
+    return `data:${mimeType};base64,${body.toString('base64')}`;
   } catch {
     return '';
   }
+}
+
+function htmlAttributes(tag) {
+  const attributes = {};
+  const pattern = /([^\s=/>]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
+  let match;
+  while ((match = pattern.exec(tag))) {
+    attributes[match[1].toLowerCase()] = String(match[2] ?? match[3] ?? match[4] ?? '').trim();
+  }
+  return attributes;
+}
+
+function normalizePageFaviconUrl(value, baseUrl) {
+  const text = String(value || '').trim().replaceAll('&amp;', '&');
+  if (!text) return '';
+  if (/^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+$/i.test(text)) {
+    return text.length <= MAX_BOOKMARK_FAVICON_BYTES ? text : '';
+  }
+  try {
+    const url = new URL(text, baseUrl);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return '';
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+function parsePageFaviconLinks(html, pageUrl) {
+  let baseUrl = pageUrl;
+  const baseTag = String(html || '').match(/<base\b[^>]*>/i);
+  if (baseTag) {
+    const baseHref = htmlAttributes(baseTag[0]).href;
+    if (baseHref) {
+      try {
+        const resolvedBase = new URL(baseHref.replaceAll('&amp;', '&'), pageUrl);
+        if (['http:', 'https:'].includes(resolvedBase.protocol) && !resolvedBase.username && !resolvedBase.password) {
+          baseUrl = resolvedBase.toString();
+        }
+      } catch {
+        // Invalid base URLs leave page-relative icon resolution unchanged.
+      }
+    }
+  }
+  const icons = [];
+  const manifests = [];
+  const linkPattern = /<link\b[^>]*>/gi;
+  let match;
+  while ((match = linkPattern.exec(String(html || '')))) {
+    const attributes = htmlAttributes(match[0]);
+    const href = normalizePageFaviconUrl(attributes.href, baseUrl);
+    if (!href) continue;
+    const rel = String(attributes.rel || '').toLowerCase().split(/[\s,]+/).filter(Boolean);
+    if (rel.includes('manifest')) manifests.push(href);
+    if (rel.includes('shortcut') || rel.some((value) => value.includes('icon'))) {
+      icons.push({ url: href, priority: rel.some((value) => value.includes('apple-touch-icon')) ? 1 : 0 });
+    }
+  }
+  icons.sort((left, right) => left.priority - right.priority);
+  return {
+    baseUrl,
+    icons: icons.map((item) => item.url),
+    manifests,
+  };
+}
+
+async function fetchProfileText(profileSession, url, maxBytes) {
+  try {
+    const response = await profileSession.fetch(url, {
+      credentials: 'omit',
+      redirect: 'follow',
+      headers: { accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.1' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) return null;
+    const body = await readProfileResponseBytes(response, maxBytes);
+    if (!body) return null;
+    return { text: body.toString('utf8'), url: safeText(response.url) || url };
+  } catch {
+    return null;
+  }
+}
+
+async function discoverPageFaviconCandidates(profileSession, pageUrl) {
+  const page = await fetchProfileText(profileSession, pageUrl, MAX_PAGE_FAVICON_HTML_BYTES);
+  if (!page) return [];
+  const parsed = parsePageFaviconLinks(page.text, page.url);
+  const candidates = [...parsed.icons];
+  for (const manifestUrl of parsed.manifests.slice(0, 2)) {
+    const manifest = await fetchProfileText(profileSession, manifestUrl, MAX_PAGE_FAVICON_MANIFEST_BYTES);
+    if (!manifest) continue;
+    try {
+      const parsedManifest = JSON.parse(manifest.text);
+      const icons = Array.isArray(parsedManifest?.icons) ? parsedManifest.icons : [];
+      for (const icon of icons) {
+        const candidate = normalizePageFaviconUrl(icon?.src, manifest.url);
+        if (candidate) candidates.push(candidate);
+      }
+    } catch {
+      // Invalid manifests do not prevent the remaining favicon candidates.
+    }
+  }
+  return candidates
+    .filter((url, index, list) => list.indexOf(url) === index)
+    .slice(0, MAX_PAGE_FAVICON_CANDIDATES);
 }
 
 async function loadProfilePageFavicon(profileId, input) {
@@ -3846,9 +4394,10 @@ async function loadProfilePageFavicon(profileId, input) {
     return { profileId: profileKey, favicon: suppliedFavicon, source: suppliedFavicon };
   }
 
+  let pageUrl = null;
   let defaultFavicon = '';
   try {
-    const pageUrl = new URL(safeText(input?.url));
+    pageUrl = new URL(safeText(input?.url));
     if (['http:', 'https:'].includes(pageUrl.protocol)) {
       pageUrl.username = '';
       pageUrl.password = '';
@@ -3858,10 +4407,18 @@ async function loadProfilePageFavicon(profileId, input) {
     // The page may have navigated away before the favicon request was sent.
   }
 
-  const candidates = [suppliedFavicon, defaultFavicon]
-    .filter((url, index, list) => url && !/^data:/i.test(url) && list.indexOf(url) === index);
   const profileSession = profileSessionRefs.get(profileKey) || session.fromPartition(profilePartition(profileKey));
-  for (const candidate of candidates) {
+  const directCandidates = [suppliedFavicon].filter((url) => url && !/^data:/i.test(url));
+  for (const candidate of directCandidates) {
+    const favicon = await fetchBookmarkFavicon(profileSession, candidate);
+    if (favicon) return { profileId: profileKey, favicon, source: candidate };
+  }
+  const discoveredCandidates = pageUrl && ['http:', 'https:'].includes(pageUrl.protocol)
+    ? await discoverPageFaviconCandidates(profileSession, pageUrl.toString())
+    : [];
+  for (const candidate of [...discoveredCandidates, defaultFavicon]) {
+    if (!candidate) continue;
+    if (/^data:image\//i.test(candidate)) return { profileId: profileKey, favicon: candidate, source: candidate };
     const favicon = await fetchBookmarkFavicon(profileSession, candidate);
     if (favicon) return { profileId: profileKey, favicon, source: candidate };
   }
@@ -3964,6 +4521,36 @@ function recordProfileSearchQuery(profileId, query) {
     searchHistory = profile.searchHistory;
   });
   return { profileId: profileKey, searchHistory };
+}
+
+function profileBrowsingHistory(profileId) {
+  const profile = store.get().profiles.find((item) => item.id === safeProfileId(profileId));
+  if (!profile) throw new Error('环境不存在');
+  return normalizeBrowsingHistory(profile.browsingHistory);
+}
+
+function sendBrowsingHistory(profileId) {
+  const win = profileWindows.get(profileId);
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('browser-shell:history-updated', { profileId, history: profileBrowsingHistory(profileId) });
+  }
+}
+
+function recordProfileBrowsingHistory(profileId, input, titleOnly = false) {
+  if (!/^https?:\/\//i.test(input?.url || '')) return;
+  store.update((next) => {
+    const profile = next.profiles.find((item) => item.id === profileId);
+    if (!profile) return;
+    if (titleOnly) {
+      const normalized = recordBrowsingHistory([], input)[0];
+      profile.browsingHistory = normalizeBrowsingHistory(profile.browsingHistory).map((record) => (
+        record.url === normalized?.url ? { ...record, title: safeText(input.title).slice(0, 512) } : record
+      ));
+    } else {
+      profile.browsingHistory = recordBrowsingHistory(profile.browsingHistory, input);
+    }
+  });
+  sendBrowsingHistory(profileId);
 }
 
 function profileDownloads(profileId) {
@@ -4148,25 +4735,44 @@ function normalizeProfile(input) {
   const current = input && typeof input === 'object' ? input : {};
   const name = safeText(current.name).slice(0, 80);
   if (!name) throw new Error('环境名称不能为空');
-  const connectionMode = current.connectionMode === 'node' ? 'node' : 'direct';
+  const connectionMode = ['node', 'subscription'].includes(current.connectionMode) ? current.connectionMode : 'direct';
   const state = store.get();
   const profileId = safeProfileId(current.id) || id('profile');
   const existingProfile = state.profiles.find((profile) => profile.id === profileId);
+  const requestedEngineMode = current.engineMode === undefined
+    ? safeText(existingProfile?.engineMode || state.settings.engineMode).toLowerCase()
+    : safeText(current.engineMode).toLowerCase();
+  if (requestedEngineMode !== 'electron' && requestedEngineMode !== 'external') {
+    throw new Error('浏览器引擎模式无效');
+  }
+  if (requestedEngineMode === 'external' && !resolveExternalEnginePath(state.settings.enginePath)) {
+    throw new Error('未找到 Google Chrome，请安装 Chrome 或在设置中手动选择 Chromium 可执行文件');
+  }
   if (connectionMode === 'node' && !state.nodes.some((node) => node.id === current.nodeId && node.supported !== false)) {
     throw new Error('所选节点不存在，请重新选择');
   }
+  const subscriptionId = connectionMode === 'subscription' ? safeText(current.subscriptionId) : '';
+  if (connectionMode === 'subscription' && !state.subscriptions.some((item) => item.id === subscriptionId)) {
+    throw new Error('所选订阅不存在，请重新选择');
+  }
+  const subscriptionRoute = connectionMode === 'subscription'
+    ? state.nodes.find((node) => node.id === current.nodeId && node.sourceId === subscriptionId && node.supported !== false)
+    : null;
   const now = new Date().toISOString();
   return {
     id: profileId,
     name,
     startUrl: ensureUrl(current.startUrl, state.settings.defaultStartUrl),
+    engineMode: requestedEngineMode,
     connectionMode,
-    nodeId: connectionMode === 'node' ? current.nodeId : null,
+    nodeId: connectionMode === 'node' ? current.nodeId : subscriptionRoute?.id || null,
+    subscriptionId: connectionMode === 'subscription' ? subscriptionId : null,
     note: safeText(current.note).slice(0, 240),
     color: /^#[0-9a-f]{6}$/i.test(current.color) ? current.color : '#4f8cff',
     bookmarks: normalizeBookmarks(current.bookmarks || existingProfile?.bookmarks),
     newTabSiteVisits: normalizeSiteVisits(existingProfile?.newTabSiteVisits),
     searchHistory: normalizeSearchHistory(existingProfile?.searchHistory),
+    browsingHistory: normalizeBrowsingHistory(existingProfile?.browsingHistory),
     traffic: normalizeTraffic(existingProfile?.traffic),
     ...profileTestIdentity(current, existingProfile),
     createdAt: safeText(current.createdAt) || now,
@@ -4178,9 +4784,12 @@ function normalizeProfile(input) {
 
 function profileSaveConfig(profile) {
   const color = safeText(profile?.color).toLowerCase();
+  const connectionMode = ['node', 'subscription'].includes(profile?.connectionMode) ? profile.connectionMode : 'direct';
   return {
-    connectionMode: profile?.connectionMode === 'node' ? 'node' : 'direct',
-    nodeId: profile?.connectionMode === 'node' ? safeText(profile?.nodeId) : null,
+    engineMode: profile?.engineMode === 'external' ? 'external' : 'electron',
+    connectionMode,
+    nodeId: connectionMode === 'node' ? safeText(profile?.nodeId) : null,
+    subscriptionId: connectionMode === 'subscription' ? safeText(profile?.subscriptionId) : null,
     note: safeText(profile?.note || profile?.notes).slice(0, 240),
     color: /^#[0-9a-f]{6}$/i.test(color) ? color : '#4f8cff',
     bookmarks: normalizeBookmarks(profile?.bookmarks),
@@ -4283,6 +4892,126 @@ function sendProfileTabOpen(profileId, url, focus = true) {
   } catch {
     return false;
   }
+}
+
+function popupWindowDimensions(features) {
+  const source = safeText(features);
+  const read = (name, fallback, minimum, maximum) => {
+    const match = source.match(new RegExp(`(?:^|,)\\s*${name}\\s*=\\s*(\\d+)`, 'i'));
+    const value = match ? Number(match[1]) : fallback;
+    return Number.isFinite(value) ? Math.min(maximum, Math.max(minimum, value)) : fallback;
+  };
+  return {
+    width: read('width', 520, 360, 1600),
+    height: read('height', 720, 280, 1200),
+  };
+}
+
+function profilePopupOptions(profileId, details, show = true) {
+  const hostWindow = profileWindows.get(profileId);
+  const profileSession = profileSessionRefs.get(profileId);
+  const dimensions = popupWindowDimensions(details?.features);
+  return {
+    ...dimensions,
+    parent: hostWindow && !hostWindow.isDestroyed() ? hostWindow : undefined,
+    show,
+    autoHideMenuBar: true,
+    webPreferences: {
+      session: profileSession,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      backgroundThrottling: false,
+    },
+  };
+}
+
+function isProfilePopupRequest(details) {
+  return classifyProfileWindowOpen(details).kind === 'popup';
+}
+
+function profileWindowOpenResponse(profileId, details) {
+  const targetUrl = safeText(details?.url) || 'about:blank';
+  if (!isAllowedNavigation(targetUrl)) return { action: 'deny' };
+  const hostWindow = profileWindows.get(profileId);
+  if (!hostWindow || hostWindow.isDestroyed()) return { action: 'deny' };
+  const route = classifyProfileWindowOpen(details);
+  if (route.kind === 'tab') {
+    sendProfileTabOpen(profileId, targetUrl, route.focus);
+    return { action: 'deny' };
+  }
+  return {
+    action: 'allow',
+    overrideBrowserWindowOptions: profilePopupOptions(profileId, details, route.kind === 'popup'),
+  };
+}
+
+function registerProfilePopupWindow(profileId, popupWindow, node, openDetails = {}) {
+  if (!popupWindow || popupWindow.isDestroyed()) return;
+  const popupContents = popupWindow.webContents;
+  const preflight = classifyProfileWindowOpen(openDetails).kind === 'preflight';
+  const popups = profilePopupWindows.get(profileId) || new Set();
+  popups.add(popupWindow);
+  profilePopupWindows.set(profileId, popups);
+  profileAuth.set(popupContents.id, node || null);
+  setWebRtcIpHandlingPolicy(popupContents, Boolean(node));
+  popupContents.setWindowOpenHandler((details) => profileWindowOpenResponse(profileId, details));
+  popupContents.on('did-create-window', (childWindow, details) => registerProfilePopupWindow(profileId, childWindow, node, details));
+  let preflightResolved = !preflight;
+  let preflightTimer = null;
+  if (preflight) {
+    try { popupWindow.hide(); } catch { /* Keep blank preflight hidden where supported. */ }
+    preflightTimer = setTimeout(() => {
+      if (preflightResolved || popupWindow.isDestroyed()) return;
+      preflightResolved = true;
+      try { popupWindow.close(); } catch { /* The preflight may already be closing. */ }
+    }, 30_000);
+    preflightTimer.unref?.();
+
+    const routePreflight = (event, url) => {
+      const targetUrl = safeText(url);
+      if (preflightResolved) return;
+      const route = classifyProfilePreflightNavigation(openDetails, targetUrl, isAllowedNavigation);
+      if (route === 'ignore') return;
+      if (route === 'deny') {
+        event.preventDefault();
+        preflightResolved = true;
+        clearTimeout(preflightTimer);
+        try { popupWindow.close(); } catch { /* The preflight may already be closing. */ }
+        return;
+      }
+      if (route === 'popup') {
+        preflightResolved = true;
+        clearTimeout(preflightTimer);
+        try { popupWindow.show(); } catch { /* The popup may be closing. */ }
+        return;
+      }
+      event.preventDefault();
+      preflightResolved = true;
+      clearTimeout(preflightTimer);
+      sendProfileTabOpen(profileId, targetUrl, true);
+      try { popupWindow.close(); } catch { /* The preflight may already be closing. */ }
+    };
+    popupContents.on('will-navigate', routePreflight);
+    popupContents.on('will-redirect', routePreflight);
+  }
+  popupContents.on('will-navigate', (event, url) => {
+    if (!isAllowedNavigation(url)) event.preventDefault();
+  });
+  popupContents.on('will-redirect', (event, url) => {
+    if (!isAllowedNavigation(url)) event.preventDefault();
+  });
+  const cleanup = () => {
+    if (preflightTimer) clearTimeout(preflightTimer);
+    profileAuth.delete(popupContents.id);
+    const current = profilePopupWindows.get(profileId);
+    current?.delete(popupWindow);
+    if (current && current.size === 0) profilePopupWindows.delete(profileId);
+  };
+  popupContents.once('destroyed', cleanup);
+  popupWindow.once('closed', cleanup);
 }
 
 function downloadGuestResource(contents, url) {
@@ -4452,21 +5181,9 @@ function showGuestContextMenu(profileId, hostWindow, guestContents, params) {
 function handleGuestShortcut(event, input, contents) {
   if (!input || !contents) return;
   if (input.type !== 'keyDown') return;
-  const key = safeText(input.key || input.keyCode).toLowerCase();
   const profileId = profileIdForGuestContents(contents);
   const hostWindow = profileWindows.get(profileId);
-  if ((input.control || input.meta) && key === 't') {
-    event.preventDefault();
-    if (hostWindow && !hostWindow.isDestroyed()) hostWindow.webContents.send('browser-shell:open-new-tab');
-    return;
-  }
-  if (input.control && input.alt && key === 'd') {
-    event.preventDefault();
-    if (hostWindow && !hostWindow.isDestroyed()) {
-      hostWindow.webContents.send('browser-shell:toggle-bookmark-bar');
-    }
-    return;
-  }
+  if (!hostWindow || hostWindow.isDestroyed() || input.isComposing) return;
   const settings = store?.get?.().settings || {};
   const shortcuts = normalizedBrowserShortcuts(settings.browserShortcuts);
   if (shortcutMatches(input, shortcuts.reload)) {
@@ -4475,6 +5192,11 @@ function handleGuestShortcut(event, input, contents) {
   } else if (shortcutMatches(input, shortcuts.devtools)) {
     event.preventDefault();
     toggleGuestDevTools(contents);
+  } else {
+    const command = browserShortcutCommand(input);
+    if (!command) return;
+    if (command !== 'escape') event.preventDefault();
+    hostWindow.webContents.send('browser-shell:command', { command, webContentsId: contents.id });
   }
 }
 
@@ -4596,14 +5318,36 @@ function createShellWindow(profile, node, displayNode = node) {
     // guest before the page can gather ICE candidates.
     setWebRtcIpHandlingPolicy(guestContents, Boolean(node));
     profileAuth.set(guestContentsId, node || null);
-    guestContents.setWindowOpenHandler((details) => {
-      const targetUrl = safeText(details?.url) || 'about:blank';
-      const focus = details?.disposition !== 'background-tab';
-      sendProfileTabOpen(profile.id, targetUrl, focus);
-      return { action: 'deny' };
+    guestContents.on('found-in-page', (_event, result) => {
+      const request = profileFindRequests.get(guestContents);
+      const host = profileWindows.get(profile.id);
+      if (request?.requestId !== result.requestId || !host || host.isDestroyed()) return;
+      host.webContents.send('browser-shell:find-result', { webContentsId: guestContentsId, token: request.token, ...result });
     });
+    let committedHistoryUrl = '';
+    guestContents.on('did-navigate', (_event, url) => {
+      committedHistoryUrl = url;
+      recordProfileBrowsingHistory(profile.id, { url, title: guestContents.getTitle() });
+    });
+    guestContents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
+      if (!isMainFrame) return;
+      committedHistoryUrl = url;
+      recordProfileBrowsingHistory(profile.id, { url, title: guestContents.getTitle() });
+    });
+    guestContents.on('page-title-updated', (_event, title) => {
+      if (committedHistoryUrl && committedHistoryUrl === guestContents.getURL()) {
+        recordProfileBrowsingHistory(profile.id, { url: committedHistoryUrl, title }, true);
+      }
+    });
+    guestContents.on('did-create-window', (popupWindow, details) => {
+      registerProfilePopupWindow(profile.id, popupWindow, node, details);
+    });
+    guestContents.setWindowOpenHandler((details) => profileWindowOpenResponse(profile.id, details));
     guestContents.on('before-input-event', (event, input) => handleGuestShortcut(event, input, guestContents));
     guestContents.on('input-event', (_event, input) => handleGuestInput(guestContents, input));
+    guestContents.on('input-event', (_event, input) => {
+      if (input.type === 'mouseDown' && !win.isDestroyed()) win.webContents.send('browser-shell:command', { command: 'dismiss-popovers', webContentsId: guestContentsId });
+    });
     guestContents.on('context-menu', (event, params) => {
       const gesture = guestGestureStates.get(guestContents);
       if (gesture?.suppressContextMenu) {
@@ -4624,11 +5368,10 @@ function createShellWindow(profile, node, displayNode = node) {
   });
 
   const shellContentsId = win.webContents.id;
-  win.webContents.setWindowOpenHandler((details) => {
-    const targetUrl = safeText(details?.url) || 'about:blank';
-    sendProfileTabOpen(profile.id, targetUrl, details?.disposition !== 'background-tab');
-    return { action: 'deny' };
+  win.webContents.on('did-create-window', (popupWindow, details) => {
+    registerProfilePopupWindow(profile.id, popupWindow, node, details);
   });
+  win.webContents.setWindowOpenHandler((details) => profileWindowOpenResponse(profile.id, details));
   let closeRequested = false;
   win.on('close', (event) => {
     // Closing a profile window is the same lifecycle boundary as pressing
@@ -4649,6 +5392,7 @@ function createShellWindow(profile, node, displayNode = node) {
     });
   });
   win.on('closed', () => {
+    closeProfilePopupWindows(profile.id);
     detachProfileTestIdentity(profileSession);
     profileWindows.delete(profile.id);
     activeProfileWindows.delete(profile.id);
@@ -4687,16 +5431,51 @@ function createShellWindow(profile, node, displayNode = node) {
       connectionCountry: connection.country,
       connectionIp: connection.ip,
       connectionLatency: connection.latency,
+      connectionMode: profile.connectionMode === 'subscription' || profile.connectionMode === 'node'
+        ? profile.connectionMode
+        : 'direct',
     },
   });
   return win;
 }
 
-async function launchWithElectron(profile, node, connectionNode = node) {
+async function createProfileProxyRouterForProfile(profileId, node, coreRuntime) {
+  const existing = profileProxyRouters.get(profileId);
+  if (existing) return existing;
+  const router = await createProfileProxyRouter({
+    nodeId: node.id,
+    coreRuntime,
+    upstreamProxyUrl: buildUpstreamProxyUrl(node, coreRuntime),
+  });
+  router.on('core-runtime-idle', (runtime) => {
+    if (!retiredProfileCoreProcesses.get(profileId)?.has(runtime)) return;
+    void stopTrackedCoreRuntime(profileId, runtime).catch((error) => {
+      console.error(`清理旧代理核心失败：${error.message}`);
+    });
+  });
+  profileProxyRouters.set(profileId, router);
+  return router;
+}
+
+async function stopProfileProxyRouter(profileId) {
+  const router = profileProxyRouters.get(profileId);
+  if (!router) return true;
+  try {
+    await router.close();
+    if (profileProxyRouters.get(profileId) === router) profileProxyRouters.delete(profileId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function launchWithElectron(profile, node, connectionNode = node, proxyRouter = null) {
   const partition = profilePartition(profile.id);
   const ses = session.fromPartition(partition);
   configureProfileSession(profile.id, ses);
-  await ses.setProxy(proxyForNode(node));
+  await ses.setProxy(proxyRouter
+    ? { proxyRules: proxyRouter.proxyUrl, proxyBypassRules: '<local>' }
+    : proxyForNode(node));
   if (typeof ses.closeAllConnections === 'function') await ses.closeAllConnections();
   const extensionResult = await syncProfileExtensions(profile.id, ses);
   startProfileTrafficTracker(profile.id, ses);
@@ -4725,7 +5504,7 @@ async function launchWithElectron(profile, node, connectionNode = node) {
   };
 }
 
-async function launchWithExternalEngine(profile, node, enginePath) {
+async function launchWithExternalEngine(profile, node, enginePath, proxyRouter = null) {
   const profileId = safeProfileId(profile.id);
   if (!profileId) throw new Error('环境标识无效');
   const profileDataPath = path.join(app.getPath('userData'), 'profiles', profileId);
@@ -4733,7 +5512,7 @@ async function launchWithExternalEngine(profile, node, enginePath) {
   const extensionPaths = store.get().extensions
     .filter((record) => extensionProfileIds(record).includes(profileId) && record.path && fs.existsSync(record.path))
     .map((record) => record.path);
-  const proxyArg = externalProxyArg(node);
+  const proxyArg = proxyRouter?.proxyUrl || externalProxyArg(node);
   const args = buildExternalEngineArgs({
     profileDataPath,
     startUrl: profile.startUrl,
@@ -4786,7 +5565,7 @@ async function launchWithExternalEngine(profile, node, enginePath) {
   if (profile.testIdentityOrigins?.length) {
     warnings.push('授权测试身份仅在内置 Electron 引擎中按来源添加请求头；外部 Chromium 不支持该功能。');
   }
-  if (node && (node.username || node.password)) {
+  if (node && (node.username || node.password) && !proxyRouter) {
     warnings.push('外部 Chromium 启动不会自动填充代理凭据，请使用无认证本地代理或在系统代理层处理认证。');
   }
   return {
@@ -4802,8 +5581,9 @@ function createProfileLaunchConfirmation(profile, previousIp, currentIp) {
     confirmationToken,
     previousIp,
     currentIp,
-    connectionMode: profile.connectionMode === 'node' ? 'node' : 'direct',
+    connectionMode: ['node', 'subscription'].includes(profile.connectionMode) ? profile.connectionMode : 'direct',
     nodeId: safeText(profile.nodeId),
+    subscriptionId: safeText(profile.subscriptionId),
     createdAt: Date.now(),
   });
   return {
@@ -4818,7 +5598,7 @@ function createProfileLaunchConfirmation(profile, previousIp, currentIp) {
 
 async function launchProfileInternal(profileId, options = {}) {
   if (profileStops.has(profileId)) throw new Error('环境正在停止，请稍后重试');
-  const state = store.get();
+  let state = store.get();
   const profile = state.profiles.find((item) => item.id === profileId);
   if (!profile) throw new Error('环境不存在');
   const runtimeProfile = {
@@ -4835,28 +5615,58 @@ async function launchProfileInternal(profileId, options = {}) {
     hideManagerWindowToTray();
     return { mode: 'existing', profileId };
   }
-  const rawNode = profile.connectionMode === 'node'
-    ? state.nodes.find((node) => node.id === profile.nodeId)
-    : null;
-  const node = hydrateNode(rawNode);
-  if (profile.connectionMode === 'node' && !node) throw new Error('节点不存在');
+  let subscriptionRoute = options.subscriptionRoute || null;
+  let node = null;
+  if (profile.connectionMode === 'node') {
+    node = hydrateNode(state.nodes.find((candidate) => candidate.id === profile.nodeId));
+    if (!node) throw new Error('节点不存在');
+  } else if (profile.connectionMode === 'subscription') {
+    const storedRoute = subscriptionRoute?.node?.id
+      ? state.nodes.find((candidate) => candidate.id === subscriptionRoute.node.id && candidate.sourceId === profile.subscriptionId && candidate.supported !== false)
+      : null;
+    const routeStatus = safeText(subscriptionRoute?.result?.status).toLowerCase();
+    const routeCheckSucceeded = subscriptionRoute?.available === true
+      || subscriptionRoute?.result?.ok === true
+      || ['ok', 'ready', 'available', 'healthy', 'reachable'].includes(routeStatus);
+    if (!storedRoute || !routeCheckSucceeded) {
+      subscriptionRoute = (await checkSubscriptionRoutes(profile.subscriptionId))[0] || null;
+    } else {
+      subscriptionRoute = { ...subscriptionRoute, node: storedRoute };
+    }
+    if (!subscriptionRoute) throw new Error('所选订阅暂无可用节点，环境未启动');
+    node = hydrateNode(subscriptionRoute.node);
+    profile.nodeId = node.id;
+    runtimeProfile.nodeId = node.id;
+    store.update((next) => {
+      const current = next.profiles.find((item) => item.id === profileId);
+      if (current?.connectionMode === 'subscription' && current.subscriptionId === profile.subscriptionId) {
+        current.nodeId = node.id;
+      }
+    });
+    state = store.get();
+    broadcastState();
+  }
 
   let launchIp = publicExitIp(options.checkedIp);
   if (!options.ipChecked) {
     let connectionCheck;
     try {
-      connectionCheck = await checkProfileConnection(profileId);
+      connectionCheck = subscriptionRoute?.result || await checkProfileConnection(profileId);
     } catch {
       // An unavailable IP probe must not change the existing launch behavior.
     }
     launchIp = publicExitIp(connectionCheck?.ipAddress);
     const previousIp = publicExitIp(profile.lastLaunchIp);
-    if (previousIp && launchIp && previousIp !== launchIp) {
+    if (shouldConfirmProfileLaunchIpChange(profile, options, previousIp, launchIp)) {
       return createProfileLaunchConfirmation(profile, previousIp, launchIp);
     }
   }
 
-  const enginePath = validateEnginePath(state.settings.enginePath);
+  const engineMode = profile.engineMode === 'external' ? 'external' : 'electron';
+  const enginePath = engineMode === 'external' ? resolveExternalEnginePath(state.settings.enginePath) : '';
+  if (engineMode === 'external' && !enginePath) {
+    throw new Error('未找到 Google Chrome，请安装 Chrome 或在设置中手动选择 Chromium 可执行文件');
+  }
   let effectiveNode = node;
   let coreRuntime;
   let coreRuntimeRecord;
@@ -4867,18 +5677,10 @@ async function launchProfileInternal(profileId, options = {}) {
     coreRuntime = await startProxyCore({ kind: selectedCore, profileId, node, state });
     const runtime = { ...coreRuntime, core: selectedCore, nodeId: node.id, exited: false };
     coreRuntimeRecord = runtime;
-    coreProcesses.set(profileId, runtime);
-    coreRuntime.child.once('exit', () => {
-      runtime.exited = true;
-      if (coreProcesses.get(profileId) === runtime) {
-        coreProcesses.delete(profileId);
-        cleanupRuntime(runtime);
-        broadcastState();
-        scheduleRuntimeCleanup(profileId);
-      }
-    });
+    trackProfileCoreRuntime(profileId, runtime);
     effectiveNode = { protocol: 'socks5', host: '127.0.0.1', port: coreRuntime.port };
   }
+  let profileProxyRouter = null;
   let result;
   try {
     // A core can exit immediately after its port becomes reachable. Do not
@@ -4887,19 +5689,23 @@ async function launchProfileInternal(profileId, options = {}) {
     if (coreRuntimeRecord && !isCoreRuntimeAlive(coreRuntimeRecord)) {
       throw new Error('代理核心启动后立即退出，请检查节点或核心配置');
     }
+    if (runtimeProfile.connectionMode === 'subscription'
+      || (engineMode === 'external' && node && (node.username || node.password))) {
+      profileProxyRouter = await createProfileProxyRouterForProfile(profileId, node, coreRuntimeRecord);
+    }
     const latestProfile = store.get().profiles.find((item) => item.id === profileId);
     if (!latestProfile) throw new Error('环境不存在');
     runtimeProfile.name = latestProfile.name;
     runtimeProfile.startUrl = ensureUrl(latestProfile.startUrl, store.get().settings.defaultStartUrl);
-    if (enginePath) {
-      result = await launchWithExternalEngine(runtimeProfile, effectiveNode, enginePath);
+    if (engineMode === 'external') {
+      result = await launchWithExternalEngine(runtimeProfile, effectiveNode, enginePath, profileProxyRouter);
     } else {
-      result = await launchWithElectron(runtimeProfile, effectiveNode, node || effectiveNode);
+      result = await launchWithElectron(runtimeProfile, effectiveNode, node || effectiveNode, profileProxyRouter);
     }
     if (coreRuntimeRecord && !isCoreRuntimeAlive(coreRuntimeRecord)) {
       throw new Error('代理核心在浏览器启动期间退出，环境未启动');
     }
-    if (enginePath) {
+    if (engineMode === 'external') {
       const external = externalProcesses.get(profileId);
       if (!external || childHasExited(external)) {
         throw new Error('外部 Chromium 启动后立即退出，请检查该浏览器版本和用户数据目录');
@@ -4911,6 +5717,7 @@ async function launchProfileInternal(profileId, options = {}) {
       try { await detachProfileWindow(profileId, createdWindow); } catch { /* Best effort after a failed launch. */ }
     }
     await stopTrackedExternalProcess(profileId);
+    await stopProfileProxyRouter(profileId);
     await stopTrackedCoreProcess(profileId);
     if (!externalProcesses.has(profileId) && !profileWindows.has(profileId)) profileRuntimeModes.delete(profileId);
     throw error;
@@ -4920,6 +5727,7 @@ async function launchProfileInternal(profileId, options = {}) {
     if (createdWindow) await detachProfileWindow(profileId, createdWindow);
     await stopTrackedExternalProcess(profileId);
     profileRuntimeModes.delete(profileId);
+    await stopProfileProxyRouter(profileId);
     await stopTrackedCoreProcess(profileId);
     throw new Error('环境在启动过程中被停止');
   }
@@ -4932,7 +5740,14 @@ async function launchProfileInternal(profileId, options = {}) {
   });
   broadcastState();
   hideManagerWindowToTray();
-  if (node?.id) void checkNodeConnection(node.id).catch(() => {});
+  if (node?.id) {
+    void checkNodeConnection(node.id)
+      .then((check) => {
+        if (!check?.ok) return autoFailoverProfilesForNode(node.id);
+        return undefined;
+      })
+      .catch(() => {});
+  }
   return result;
 }
 
@@ -4966,12 +5781,24 @@ async function resolveProfileLaunchConfirmation(profileId, confirmationToken, co
 
   const profile = store.get().profiles.find((item) => item.id === profileKey);
   if (!profile
-    || (profile.connectionMode === 'node' ? 'node' : 'direct') !== challenge.connectionMode
+    || (['node', 'subscription'].includes(profile.connectionMode) ? profile.connectionMode : 'direct') !== challenge.connectionMode
     || safeText(profile.nodeId) !== challenge.nodeId
+    || safeText(profile.subscriptionId) !== challenge.subscriptionId
     || publicExitIp(profile.lastLaunchIp) !== challenge.previousIp) {
     throw new Error('环境连接已变化，请重新点击启动并确认');
   }
-  return launchProfile(profileKey, { ipChecked: true, checkedIp: challenge.currentIp });
+  const options = { ipChecked: true, checkedIp: challenge.currentIp };
+  if (profile.connectionMode === 'subscription') {
+    const route = store.get().nodes.find((node) => (
+      node.id === challenge.nodeId && node.sourceId === challenge.subscriptionId && node.supported !== false
+    ));
+    if (!route) throw new Error('订阅线路已变化，请重新启动并确认');
+    options.subscriptionRoute = {
+      node: route,
+      result: { ok: true, status: 'ok', latencyMs: route.latencyMs, ipAddress: challenge.currentIp },
+    };
+  }
+  return launchProfile(profileKey, options);
 }
 
 async function detachProfileWindow(profileId, win) {
@@ -4989,6 +5816,7 @@ async function detachProfileWindow(profileId, win) {
     }
     await waitForGuestTeardown(profileId, PROFILE_TEARDOWN_TIMEOUT_MS);
   }
+  closeProfilePopupWindows(profileId);
   const profileSession = profileSessionRefs.get(profileId);
   for (const [panelKey, panel] of extensionPanelWindows.entries()) {
     if (!panelKey.startsWith(`${profileId}:`)) continue;
@@ -5012,6 +5840,17 @@ async function detachProfileWindow(profileId, win) {
   if (!destroyed && !win.isDestroyed()) retiredProfileWindows.add(win);
 }
 
+function closeProfilePopupWindows(profileId) {
+  const popups = profilePopupWindows.get(profileId);
+  if (!popups) return;
+  profilePopupWindows.delete(profileId);
+  for (const popup of popups) {
+    if (!popup || popup.isDestroyed()) continue;
+    try { profileAuth.delete(popup.webContents.id); } catch { /* The popup may be tearing down. */ }
+    try { popup.close(); } catch { /* The popup may already be closing. */ }
+  }
+}
+
 function childHasExited(child) {
   if (!child) return true;
   return child.exitCode != null || child.signalCode != null;
@@ -5024,9 +5863,34 @@ function isCoreRuntimeAlive(runtime) {
 function profileRequiresCore(profileId) {
   const state = store?.get?.();
   const profile = state?.profiles?.find((item) => item.id === profileId);
-  if (!profile || profile.connectionMode !== 'node') return false;
+  if (!profile || !['node', 'subscription'].includes(profile.connectionMode)) return false;
   const node = state.nodes?.find((item) => item.id === profile.nodeId);
   return Boolean(node?.requiresCore || node?.coreConfig);
+}
+
+function trackProfileCoreRuntime(profileId, runtime) {
+  coreProcesses.set(profileId, runtime);
+  runtime.child.once('exit', () => {
+    runtime.exited = true;
+    cleanupRuntime(runtime);
+    const wasCurrent = coreProcesses.get(profileId) === runtime;
+    if (wasCurrent) coreProcesses.delete(profileId);
+    const retired = retiredProfileCoreProcesses.get(profileId);
+    retired?.delete(runtime);
+    if (retired && retired.size === 0) retiredProfileCoreProcesses.delete(profileId);
+    broadcastState();
+    if (!wasCurrent) return;
+
+    const profile = store.get().profiles.find((item) => item.id === profileId);
+    if (profile?.connectionMode === 'subscription'
+      && isProfileRunning(profileId)
+      && !profileStops.has(profileId)
+      && !profileLaunches.has(profileId)) {
+      void autoFailoverProfile(profileId, runtime.nodeId || profile.nodeId).catch(() => {});
+      return;
+    }
+    scheduleRuntimeCleanup(profileId);
+  });
 }
 
 function scheduleRuntimeCleanup(profileId) {
@@ -5074,15 +5938,36 @@ async function stopTrackedExternalProcess(profileId) {
   return true;
 }
 
-async function stopTrackedCoreProcess(profileId) {
-  const runtime = coreProcesses.get(profileId);
+async function stopTrackedCoreRuntime(profileId, runtime) {
   if (!runtime) return true;
-  terminateCore(runtime.child);
-  const exited = await waitForChildExit(runtime.child);
-  if (!exited) return false;
-  cleanupRuntime(runtime);
-  if (coreProcesses.get(profileId) === runtime) coreProcesses.delete(profileId);
-  return true;
+  if (runtime.stopPromise) return runtime.stopPromise;
+  const stopPromise = (async () => {
+    if (!childHasExited(runtime.child)) terminateCore(runtime.child);
+    const exited = await waitForChildExit(runtime.child);
+    if (!exited) return false;
+    cleanupRuntime(runtime);
+    if (coreProcesses.get(profileId) === runtime) coreProcesses.delete(profileId);
+    const retired = retiredProfileCoreProcesses.get(profileId);
+    retired?.delete(runtime);
+    if (retired && retired.size === 0) retiredProfileCoreProcesses.delete(profileId);
+    return true;
+  })();
+  runtime.stopPromise = stopPromise;
+  try {
+    return await stopPromise;
+  } finally {
+    if (runtime.stopPromise === stopPromise) runtime.stopPromise = null;
+  }
+}
+
+async function stopTrackedCoreProcess(profileId) {
+  const runtimes = new Set([
+    coreProcesses.get(profileId),
+    ...(retiredProfileCoreProcesses.get(profileId) || []),
+  ].filter(Boolean));
+  if (!runtimes.size) return true;
+  const results = await Promise.all([...runtimes].map((runtime) => stopTrackedCoreRuntime(profileId, runtime)));
+  return results.every(Boolean);
 }
 
 function settleWithin(promise, timeoutMs) {
@@ -5156,6 +6041,8 @@ async function stopProfile(profileId) {
     stopProfileTraffic(profileId);
     const externalStopped = await stopTrackedExternalProcess(profileId);
     if (!externalStopped) cleanupError = new Error('外部 Chromium 未能及时退出，已停止继续清理；请关闭残留窗口后重试');
+    const routerStopped = await stopProfileProxyRouter(profileId);
+    if (!routerStopped) cleanupError ||= new Error('订阅自动转发器未能及时关闭；请稍后重试');
     const coreStopped = await stopTrackedCoreProcess(profileId);
     if (!coreStopped) cleanupError ||= new Error('代理核心未能及时退出，已停止继续清理；请稍后重试');
     if (!externalProcesses.has(profileId) && !profileWindows.has(profileId)) profileRuntimeModes.delete(profileId);
@@ -5167,14 +6054,68 @@ async function stopProfile(profileId) {
   }
 }
 
+async function switchProfileFromBrowserShell(profileId, input, sender) {
+  const profileKey = safeProfileId(profileId);
+  const payload = input && typeof input === 'object' ? input : {};
+  const type = safeText(payload.type).toLowerCase();
+  if (type === 'subscription') {
+    return switchProfileSubscription(profileKey, payload.subscriptionId);
+  }
+  if (!['direct', 'node'].includes(type)) throw new Error('连接线路类型无效');
+
+  const selectedNodeId = type === 'node' ? safeText(payload.nodeId) : '';
+  const profile = store.get().profiles.find((item) => item.id === profileKey);
+  if (!profile) throw new Error('环境不存在');
+  const targetMode = selectedNodeId ? 'node' : 'direct';
+  const unchanged = profile.connectionMode === targetMode && safeText(profile.nodeId) === selectedNodeId;
+  let launchOptions = {};
+  if (!unchanged && isProfileRunning(profileKey)) {
+    const probe = selectedNodeId ? await checkNodeConnection(selectedNodeId) : await checkDirectConnection();
+    if (probe?.ok === false) {
+      throw new Error(selectedNodeId ? '所选节点当前不可达，未切换连接' : '系统直连当前不可达，未切换连接');
+    }
+    const currentIp = publicExitIp(probe?.ipAddress);
+    const previousIp = publicExitIp(profile.lastLaunchIp);
+    const targetProfile = {
+      ...profile,
+      connectionMode: targetMode,
+      nodeId: selectedNodeId || null,
+      subscriptionId: null,
+    };
+    if (shouldConfirmProfileLaunchIpChange(targetProfile, {}, previousIp, currentIp)) {
+      const confirmed = await requestUiConfirmation(sender, {
+        eyebrow: '连接安全提示',
+        title: '出口 IP 已变化',
+        message: `当前出口 IP 为 ${currentIp}，与上次启动时的 ${previousIp} 不同。`,
+        detail: '仍要切换到这条线路吗？',
+        confirmLabel: '仍然切换',
+      });
+      if (!confirmed) return { profileId: profileKey, cancelled: true };
+    }
+    if (currentIp) launchOptions = { ipChecked: true, checkedIp: currentIp };
+  }
+  return switchProfileNodeWithOptions(profileKey, selectedNodeId, launchOptions);
+}
+
 async function switchProfileNode(profileId, nodeId) {
+  return switchProfileNodeWithOptions(profileId, nodeId);
+}
+
+async function switchProfileNodeWithOptions(profileId, nodeId, launchOptions = {}) {
   const profileKey = safeText(profileId);
   const selectedNodeId = safeText(nodeId);
   const state = store.get();
   const profile = state.profiles.find((item) => item.id === profileKey);
   if (!profile) throw new Error('环境不存在');
+  if (profileAutoFailovers.has(profileKey) || profileConnectionRefreshes.has(profileKey) || profileStops.has(profileKey) || profileLaunches.has(profileKey)) {
+    throw new Error('环境连接正在切换，请稍后重试');
+  }
   if (selectedNodeId && !state.nodes.some((node) => node.id === selectedNodeId && node.supported !== false)) {
     throw new Error('所选节点不存在或暂不支持');
+  }
+  if (profile.connectionMode === (selectedNodeId ? 'node' : 'direct')
+    && safeText(profile.nodeId) === selectedNodeId) {
+    return { profileId: profileKey, nodeId: selectedNodeId || null, restarted: false };
   }
   const wasRunning = isProfileRunning(profileKey);
   if (wasRunning) await stopProfile(profileKey);
@@ -5183,14 +6124,67 @@ async function switchProfileNode(profileId, nodeId) {
     if (current) {
       current.connectionMode = selectedNodeId ? 'node' : 'direct';
       current.nodeId = selectedNodeId || null;
+      current.subscriptionId = null;
       current.updatedAt = new Date().toISOString();
     }
   });
-  const launchResult = wasRunning ? await launchProfile(profileKey) : null;
+  const launchResult = wasRunning ? await launchProfile(profileKey, launchOptions) : null;
   broadcastState();
   return {
     profileId: profileKey,
     nodeId: selectedNodeId || null,
+    restarted: wasRunning,
+    launchConfirmation: launchResult?.confirmationRequired ? launchResult : null,
+  };
+}
+
+async function switchProfileSubscription(profileId, subscriptionId) {
+  const profileKey = safeText(profileId);
+  const selectedSubscriptionId = safeText(subscriptionId);
+  const profile = store.get().profiles.find((item) => item.id === profileKey);
+  if (!profile) throw new Error('环境不存在');
+  if (profileAutoFailovers.has(profileKey) || profileConnectionRefreshes.has(profileKey) || profileStops.has(profileKey) || profileLaunches.has(profileKey)) {
+    throw new Error('环境连接正在切换，请稍后重试');
+  }
+  if (!store.get().subscriptions.some((item) => item.id === selectedSubscriptionId)) {
+    throw new Error('所选订阅不存在，请重新选择');
+  }
+  const route = (await checkSubscriptionRoutes(selectedSubscriptionId))[0];
+  if (!route) throw new Error('所选订阅暂无可用节点，已保留当前连接');
+  const latestProfile = store.get().profiles.find((item) => item.id === profileKey);
+  if (!latestProfile
+    || latestProfile.connectionMode !== profile.connectionMode
+    || safeText(latestProfile.subscriptionId) !== safeText(profile.subscriptionId)
+    || safeText(latestProfile.nodeId) !== safeText(profile.nodeId)
+    || profileAutoFailovers.has(profileKey)
+    || profileStops.has(profileKey)
+    || profileLaunches.has(profileKey)) {
+    throw new Error('环境连接在选择期间发生变化，请重新选择');
+  }
+
+  const wasRunning = isProfileRunning(profileKey);
+  const unchanged = latestProfile.connectionMode === 'subscription'
+    && latestProfile.subscriptionId === selectedSubscriptionId
+    && safeText(latestProfile.nodeId) === route.node.id;
+  if (unchanged) return { profileId: profileKey, subscriptionId: selectedSubscriptionId, nodeId: route.node.id, restarted: false };
+  if (wasRunning) await stopProfile(profileKey);
+  store.update((next) => {
+    const current = next.profiles.find((item) => item.id === profileKey);
+    if (current) {
+      current.connectionMode = 'subscription';
+      current.subscriptionId = selectedSubscriptionId;
+      current.nodeId = route.node.id;
+      current.updatedAt = new Date().toISOString();
+    }
+  });
+  const launchResult = wasRunning
+    ? await launchProfile(profileKey, { subscriptionRoute: route })
+    : null;
+  broadcastState();
+  return {
+    profileId: profileKey,
+    subscriptionId: selectedSubscriptionId,
+    nodeId: route.node.id,
     restarted: wasRunning,
     launchConfirmation: launchResult?.confirmationRequired ? launchResult : null,
   };
@@ -5222,12 +6216,25 @@ async function clearProfileData(profileId) {
 async function saveApplicationSettings(input, sender) {
   const settings = input && typeof input === 'object' ? input : {};
   const currentState = store.get();
-  const nextEnginePath = settings.enginePath === undefined
-    ? currentState.settings.enginePath
-    : validateEnginePath(settings.enginePath);
-  if (!sameEnginePath(currentState.settings.enginePath, nextEnginePath)
+  const currentEngineMode = normalizeEngineMode(currentState.settings.engineMode, currentState.settings.enginePath);
+  const nextEngineMode = settings.engineMode === undefined
+    ? currentEngineMode
+    : safeText(settings.engineMode).toLowerCase();
+  if (nextEngineMode !== 'electron' && nextEngineMode !== 'external') throw new Error('浏览器引擎模式无效');
+  const requestedEnginePath = settings.enginePath === undefined
+    ? safeText(currentState.settings.enginePath)
+    : safeText(settings.enginePath);
+  const enginePathChanged = !sameEnginePath(currentState.settings.enginePath, requestedEnginePath);
+  let nextEnginePath = requestedEnginePath;
+  if (requestedEnginePath && (enginePathChanged || nextEngineMode === 'external')) {
+    nextEnginePath = validateEnginePath(requestedEnginePath);
+  }
+  if (nextEngineMode === 'external' && !resolveExternalEnginePath(requestedEnginePath)) {
+    throw new Error('未找到 Google Chrome，请安装 Chrome 或选择有效的 Chromium 可执行文件');
+  }
+  if (enginePathChanged
     && currentState.profiles.some((profile) => isProfileRunning(profile.id))) {
-    throw new Error('请先停止运行中的环境，再切换浏览器引擎');
+    throw new Error('请先停止运行中的环境，再更换外部 Chromium 路径');
   }
   const corePaths = [];
   for (const [key, label] of [['xrayPath', 'Xray'], ['singboxPath', 'sing-box']]) {
@@ -5238,6 +6245,7 @@ async function saveApplicationSettings(input, sender) {
   }
   const browserSettings = await prepareBrowserSettings(settings, currentState.settings, sender);
   store.update((next) => {
+    next.settings.engineMode = nextEngineMode;
     if (settings.enginePath !== undefined) next.settings.enginePath = nextEnginePath;
     for (const [key, corePath] of corePaths) {
       const previousPath = safeText(next.settings[key]);
@@ -5260,14 +6268,13 @@ async function saveApplicationSettings(input, sender) {
   return {
     settings: publicBrowserSettings(store.get()),
     agentKeyStatus: browserSettings.agentKeyStatus,
-    jevKeyStatus: browserSettings.jevKeyStatus,
   };
 }
 
 const AGENT_PROFILE_SETTING_KEYS = new Set([
   'agentApiUrl', 'agentProtocolSuffix', 'agentApi', 'agentProtocol', 'agentBaseUrl', 'agentModel',
   'agentContextBudgetTokens', 'agentMaxOutputTokens', 'agentTemperature', 'agentMaxSteps', 'agentReasoningEffort', 'agentKey',
-  'agentToken', 'jevProvider', 'jevBaseUrl', 'jevModel', 'jevKey', 'jevToken', 'jevAutoJudgeEnabled',
+  'agentToken',
 ]);
 
 async function saveAgentProfileSettings(profileId, input, sender) {
@@ -5287,7 +6294,6 @@ async function saveAgentProfileSettings(profileId, input, sender) {
       profileId: profileKey,
       settings: publicBrowserSettings(store.get(), profileKey),
       agentKeyStatus: 'unchanged',
-      jevKeyStatus: 'unchanged',
     };
   }
   const effective = { ...state.settings, ...currentOverride };
@@ -5309,7 +6315,6 @@ async function saveAgentProfileSettings(profileId, input, sender) {
     profileId: profileKey,
     settings: publicBrowserSettings(store.get(), profileKey),
     agentKeyStatus: prepared.agentKeyStatus,
-    jevKeyStatus: prepared.jevKeyStatus,
   };
 }
 
@@ -5799,6 +6804,7 @@ async function importSubscription(payload) {
   store.update((next) => {
     // A successful refresh is authoritative: replace every node owned by the subscription.
     const nodesForStorage = persisted;
+    const storedNodeIds = [];
     if (sourceId) {
       const oldNodes = next.nodes.filter((node) => node.sourceId === sourceId);
       const oldIds = new Set(oldNodes.map((node) => node.id));
@@ -5806,8 +6812,13 @@ async function importSubscription(payload) {
       next.nodes = next.nodes.filter((node) => node.sourceId !== sourceId);
       for (const profile of next.profiles) {
         if (profile.nodeId && oldIds.has(profile.nodeId) && !newIds.has(profile.nodeId)) {
-          profile.connectionMode = 'direct';
-          profile.nodeId = null;
+          if (profile.connectionMode === 'subscription' && profile.subscriptionId === sourceId) {
+            if (!isProfileRunning(profile.id)) profile.nodeId = null;
+          } else {
+            profile.connectionMode = 'direct';
+            profile.nodeId = null;
+            profile.subscriptionId = null;
+          }
         }
       }
     }
@@ -5817,22 +6828,29 @@ async function importSubscription(payload) {
       if (!keys.has(key)) {
         next.nodes.push(node);
         keys.add(key);
+        storedNodeIds.push(node.id);
       }
     }
     if (sourceUrl) {
       const existing = next.subscriptions.find((item) => item.id === sourceId);
       const record = existing || { id: sourceId || id('subscription'), createdAt: new Date().toISOString() };
       sourceId = record.id;
-      record.name = resolveSubscriptionName({
+      const nameDetails = resolveSubscriptionNameDetails({
         name: input.name,
         existingName: existing?.name,
+        existingNameSource: existing?.nameSource,
         url: sourceUrl,
+        headers: responseHeaders,
+        nodes: [...parsedNodesRaw, ...unsupportedNodesRaw],
       });
+      record.name = nameDetails.name;
+      record.nameSource = nameDetails.source;
+      record.accountTag = safeText(record.accountTag) || nextSubscriptionAccountTag(next.subscriptions);
       if (requestedSortOrder !== null) record.sortOrder = requestedSortOrder;
       else if (!existing) record.sortOrder = next.subscriptions.length;
       record.url = sourceUrl;
       record.source = source;
-      record.nodeIds = nodesForStorage.map((node) => node.id);
+      record.nodeIds = storedNodeIds;
       record.metadata = metadataResult.metadata;
       record.lastUpdatedAt = new Date().toISOString();
       record.status = 'ok';
@@ -5872,7 +6890,10 @@ function renameSubscription(subscriptionId, name) {
   if (!current) throw new Error('订阅源不存在');
   store.update((next) => {
     const record = next.subscriptions.find((item) => item.id === idValue);
-    if (record) record.name = nextName;
+    if (record) {
+      record.name = nextName;
+      record.nameSource = 'custom';
+    }
   });
   broadcastState();
   return { subscriptionId: idValue, name: nextName };
@@ -5904,6 +6925,7 @@ function editSubscription(payload) {
     const record = next.subscriptions.find((item) => item.id === idValue);
     if (record) {
       record.name = nextName;
+      record.nameSource = 'custom';
       record.sortOrder = nextSortOrder;
     }
   });
@@ -5947,10 +6969,20 @@ async function refreshSubscription(subscriptionId) {
   const idValue = safeText(subscriptionId);
   const record = store.get().subscriptions.find((item) => item.id === idValue);
   if (!record) throw new Error('订阅源不存在');
+  const attemptedAt = new Date().toISOString();
+  store.update((next) => {
+    const current = next.subscriptions.find((item) => item.id === idValue);
+    if (current) current.lastRefreshAttemptAt = attemptedAt;
+  });
+  broadcastState();
   const url = revealSecret(record.url);
   if (!url) throw new Error('订阅地址无法解密，请重新添加订阅');
   try {
-    const result = await importSubscription({ url, subscriptionId: idValue, name: record.name });
+    const result = await importSubscription({
+      url,
+      subscriptionId: idValue,
+      name: record.nameSource === 'custom' ? record.name : '',
+    });
     // Migrate legacy safe-storage records after a successful read so future
     // restarts do not depend on a keyring entry that may no longer exist.
     if (record.url !== url) {
@@ -5976,18 +7008,19 @@ async function refreshSubscription(subscriptionId) {
 
 async function deleteSubscription(subscriptionId) {
   const idValue = safeText(subscriptionId);
-  const record = store.get().subscriptions.find((item) => item.id === idValue);
+  const state = store.get();
+  const record = state.subscriptions.find((item) => item.id === idValue);
   if (!record) throw new Error('订阅源不存在');
-  const nodeIds = new Set(store.get().nodes.filter((node) => node.sourceId === idValue).map((node) => node.id));
-  if ([...store.get().profiles].some((profile) => profile.nodeId && nodeIds.has(profile.nodeId) && isProfileRunning(profile.id))) {
+  const nodeIds = subscriptionNodeIds(state, idValue);
+  if ([...state.profiles].some((profile) => (
+    (profile.nodeId && nodeIds.has(profile.nodeId)
+      || profile.connectionMode === 'subscription' && profile.subscriptionId === idValue)
+    && isProfileRunning(profile.id)
+  ))) {
     throw new Error('订阅节点正在被运行中的环境使用，请先停止环境');
   }
   store.update((next) => {
-    next.nodes = next.nodes.filter((node) => node.sourceId !== idValue);
-    next.profiles = next.profiles.map((profile) => nodeIds.has(profile.nodeId)
-      ? { ...profile, connectionMode: 'direct', nodeId: null }
-      : profile);
-    next.subscriptions = next.subscriptions.filter((item) => item.id !== idValue);
+    removeSubscriptionData(next, idValue);
   });
   broadcastState();
   return { subscriptionId: idValue };
@@ -6285,6 +7318,32 @@ function registerIpc() {
     settings: publicBrowserSettings(store.get(), profileId),
   }));
 
+  shellHandle('browser-shell:refresh-connection', async (_event, profileId) => {
+    try {
+      return { ok: true, ...(await refreshBrowserConnection(profileId)) };
+    } catch (error) {
+      return errorResult(error);
+    }
+  });
+
+  shellHandle('browser-shell:get-connection-routes', (_event, profileId) => {
+    try {
+      return { ok: true, ...profileConnectionRouteOptions(profileId) };
+    } catch (error) {
+      return errorResult(error);
+    }
+  });
+
+  shellHandle('browser-shell:switch-connection-route', async (event, profileId, input) => {
+    try {
+      const result = await switchProfileFromBrowserShell(profileId, input, event.sender);
+      void refreshConnectionStatus();
+      return { ok: true, ...result };
+    } catch (error) {
+      return errorResult(error);
+    }
+  });
+
   shellHandle('browser-shell:get-bookmarks', (_event, profileId) => ({
     ok: true,
     profileId,
@@ -6327,6 +7386,39 @@ function registerIpc() {
     } catch (error) {
       return errorResult(error);
     }
+  });
+
+  shellHandle('browser-shell:get-history', (_event, profileId) => ({ ok: true, profileId, history: profileBrowsingHistory(profileId) }));
+  shellHandle('browser-shell:find-page', (_event, profileId, input) => {
+    try {
+      const contents = agentGuestContentsForProfile(profileId, input?.webContentsId);
+      const query = typeof input?.query === 'string' ? input.query.slice(0, 2048) : '';
+      if (!query) { profileFindRequests.delete(contents); contents.stopFindInPage('clearSelection'); return { ok: true }; }
+      const requestId = contents.findInPage(query, { forward: input?.forward !== false, findNext: input?.findNext === true, matchCase: false });
+      profileFindRequests.set(contents, { requestId, token: input?.token });
+      return { ok: true, requestId };
+    } catch (error) { return errorResult(error); }
+  });
+  shellHandle('browser-shell:delete-history', (_event, profileId, url) => {
+    store.update((next) => {
+      const profile = next.profiles.find((item) => item.id === profileId);
+      if (profile) profile.browsingHistory = deleteBrowsingHistoryEntry(profile.browsingHistory, url);
+    });
+    sendBrowsingHistory(profileId);
+    return { ok: true, history: profileBrowsingHistory(profileId) };
+  });
+  shellHandle('browser-shell:clear-history', (_event, profileId) => {
+    store.update((next) => {
+      const profile = next.profiles.find((item) => item.id === profileId);
+      if (profile) profile.browsingHistory = [];
+    });
+    sendBrowsingHistory(profileId);
+    return { ok: true, history: [] };
+  });
+  shellHandle('browser-shell:fullscreen', (_event, profileId) => {
+    const win = profileWindows.get(profileId);
+    if (win && !win.isDestroyed()) win.setFullScreen(!win.isFullScreen());
+    return { ok: true };
   });
 
   shellHandle('browser-shell:record-search-query', (_event, profileId, query) => {
@@ -6408,6 +7500,29 @@ function registerIpc() {
     }
   });
 
+  shellHandle('browser-shell:control-download', (_event, profileId, input) => {
+    try { return controlProfileDownload(profileId, input); } catch (error) { return errorResult(error); }
+  });
+  shellHandle('browser-shell:tab-menu', (_event, profileId, input) => {
+    const win = profileWindows.get(profileId);
+    if (!win || win.isDestroyed()) return { ok: false };
+    const tabId = safeText(input?.tabId);
+    const action = (command) => () => win.webContents.send('browser-shell:tab-action', { tabId, command });
+    Menu.buildFromTemplate([
+      { label: '在右侧新建标签页', click: action('new-right') },
+      { label: '重新加载', click: action('reload') },
+      { label: '复制标签页', click: action('duplicate') },
+      { type: 'separator' },
+      { label: input?.pinned ? '取消固定标签页' : '固定标签页', click: action('pin') },
+      { label: input?.muted ? '取消网站静音' : '将网站静音', enabled: input?.canMute === true, click: action('mute') },
+      { type: 'separator' },
+      { label: '关闭标签页', click: action('close') },
+      { label: '关闭其他标签页', enabled: input?.hasOthers === true, click: action('close-others') },
+      { label: '关闭右侧标签页', enabled: input?.hasRight === true, click: action('close-right') },
+    ]).popup({ window: win });
+    return { ok: true };
+  });
+
   shellHandle('browser-shell:clear-downloads', (_event, profileId) => {
     try {
       return clearCompletedProfileDownloads(profileId);
@@ -6427,8 +7542,10 @@ function registerIpc() {
         if (profile) {
           profile.newTabSiteVisits = [];
           profile.searchHistory = [];
+          profile.browsingHistory = [];
         }
       });
+      sendBrowsingHistory(profileKey);
       return { ok: true };
     } catch (error) {
       return errorResult(error);
@@ -6684,14 +7801,6 @@ function registerIpc() {
     }
   });
 
-  shellHandle('browser-shell:jev-decision', async (event, profileId, input) => {
-    try {
-      return await runAgentRequest(event.sender, input?.requestId, (signal) => requestJevDecision(profileId, input, signal));
-    } catch (error) {
-      return errorResult(error);
-    }
-  });
-
   shellHandle('browser-shell:set-extension', async (_event, profileId, payload) => {
     try {
       const input = payload && typeof payload === 'object' ? payload : {};
@@ -6729,6 +7838,36 @@ function registerIpc() {
     return { ok: true };
   });
 
+  handle('profile:set-engine-mode', (_event, input) => {
+    try {
+      const payload = input && typeof input === 'object' ? input : {};
+      const profileId = safeProfileId(payload.profileId);
+      const engineMode = safeText(payload.engineMode).toLowerCase();
+      if (!profileId) throw new Error('环境标识无效');
+      if (engineMode !== 'electron' && engineMode !== 'external') throw new Error('浏览器引擎模式无效');
+
+      const currentState = store.get();
+      const profile = currentState.profiles.find((item) => item.id === profileId);
+      if (!profile) throw new Error('环境不存在');
+      if (isProfileRunning(profileId) || profileLaunches.has(profileId) || profileStops.has(profileId)) {
+        throw new Error('请先停止环境，再切换浏览器内核');
+      }
+      if (engineMode === 'external' && !resolveExternalEnginePath(currentState.settings.enginePath)) {
+        throw new Error('未找到 Google Chrome，请安装 Chrome 或在设置中手动选择 Chromium 可执行文件');
+      }
+      if (profile.engineMode !== engineMode) {
+        store.update((next) => {
+          const current = next.profiles.find((item) => item.id === profileId);
+          if (current) current.engineMode = engineMode;
+        });
+        broadcastState();
+      }
+      return publicResult({ profileId, engineMode });
+    } catch (error) {
+      return errorResult(error);
+    }
+  });
+
   handle('profile:save', (_event, input) => {
     try {
       const nextProfile = normalizeProfile(input);
@@ -6758,6 +7897,7 @@ function registerIpc() {
       const {
         newTabSiteVisits: _newTabSiteVisits,
         searchHistory: _searchHistory,
+        browsingHistory: _browsingHistory,
         ...publicProfile
       } = nextProfile;
       return publicResult({ profile: publicProfile });
@@ -6837,9 +7977,25 @@ function registerIpc() {
     }
   });
 
+  handle('profile:switch-subscription', async (_event, payload) => {
+    try {
+      const input = payload && typeof payload === 'object' ? payload : {};
+      const result = await switchProfileSubscription(input.profileId, input.subscriptionId);
+      void refreshConnectionStatus();
+      return publicResult(result);
+    } catch (error) {
+      return errorResult(error);
+    }
+  });
+
   handle('profile:check-connection', async (_event, profileId) => {
     try {
+      const profileKey = safeProfileId(profileId);
+      const profile = store.get().profiles.find((item) => item.id === profileKey);
       const result = await checkProfileConnection(profileId);
+      if (!result?.ok && profile?.connectionMode === 'subscription') {
+        await autoFailoverProfile(profileKey, profile.nodeId || '');
+      }
       return publicResult({ result });
     } catch (error) {
       return errorResult(error);
@@ -6949,16 +8105,20 @@ function registerIpc() {
   handle('node:delete', (_event, nodeId) => {
     try {
       const idValue = safeText(nodeId);
-      if (store.get().profiles.some((profile) => profile.nodeId === idValue && isProfileRunning(profile.id))) {
+      const state = store.get();
+      if (state.profiles.some((profile) => profile.nodeId === idValue && isProfileRunning(profile.id))) {
         throw new Error('该节点正在被运行中的环境使用，请先停止环境');
       }
+      const subscriptionIds = new Set(state.subscriptions.map((item) => item.id));
       store.update((next) => {
         next.nodes = next.nodes.filter((node) => node.id !== idValue);
-        next.profiles = next.profiles.map((profile) => (
-          profile.nodeId === idValue
-            ? { ...profile, connectionMode: 'direct', nodeId: null }
-            : profile
-        ));
+        next.profiles = next.profiles.map((profile) => {
+          if (profile.nodeId !== idValue) return profile;
+          if (profile.connectionMode === 'subscription' && subscriptionIds.has(profile.subscriptionId)) {
+            return { ...profile, nodeId: null };
+          }
+          return { ...profile, connectionMode: 'direct', nodeId: null, subscriptionId: null };
+        });
       });
       broadcastState();
       void refreshConnectionStatus();
@@ -6972,6 +8132,7 @@ function registerIpc() {
     try {
       const idValue = safeText(nodeId);
       const result = await checkNodeConnection(idValue);
+      if (!result?.ok) await autoFailoverProfilesForNode(idValue);
       return { ok: true, result, state: publicState() };
     } catch (error) {
       return errorResult(error);
@@ -6981,6 +8142,10 @@ function registerIpc() {
   handle('node:check-batch', async (_event, nodeIds) => {
     try {
       const result = await checkNodeConnections(nodeIds);
+      updateStoppedSubscriptionRoutesFromChecks(result.results);
+      const failedNodeIds = result.results.filter((item) => item && !item.ok).map((item) => item.nodeId);
+      await Promise.all(failedNodeIds.map((idValue) => autoFailoverProfilesForNode(idValue)));
+      await autoFailoverUnavailableSubscriptionProfiles();
       return { ok: true, ...result, state: publicState() };
     } catch (error) {
       return errorResult(error);
@@ -7056,6 +8221,7 @@ function registerIpc() {
       }
       const installed = await installLatestBrowser({ baseDir: app.getPath('userData') });
       store.update((next) => {
+        next.settings.engineMode = 'external';
         next.settings.enginePath = installed.path;
         next.settings.engineVersion = installed.version;
         next.settings.engineSha256 = installed.sha256;
@@ -7170,12 +8336,25 @@ app.on('before-quit', (event) => {
     terminateExternalProcess(child);
     return waitForChildExit(child);
   });
-  const coreWaits = [...coreProcesses.values()].map((runtime) => {
+  const routedCoreRuntimes = new Set(coreProcesses.values());
+  for (const runtimes of retiredProfileCoreProcesses.values()) {
+    for (const runtime of runtimes) routedCoreRuntimes.add(runtime);
+  }
+  const coreWaits = [...routedCoreRuntimes].map((runtime) => {
     terminateCore(runtime.child);
     return waitForChildExit(runtime.child).then((exited) => {
       if (exited) cleanupRuntime(runtime);
       return exited;
     });
+  });
+  const proxyRouterWaits = [...profileProxyRouters.entries()].map(async ([profileId, router]) => {
+    try {
+      await router.close();
+      if (profileProxyRouters.get(profileId) === router) profileProxyRouters.delete(profileId);
+      return true;
+    } catch {
+      return false;
+    }
   });
   const extensionStoreCoreWaits = [...extensionStoreProxyCores].map((runtime) => {
     terminateCore(runtime.child);
@@ -7189,7 +8368,7 @@ app.on('before-quit', (event) => {
   });
   // app.exit() closes all Electron windows immediately. Avoid touching a live
   // <webview> here because Electron 44 may block even on hide/destroy.
-  Promise.all([...childWaits, ...coreWaits, ...extensionStoreCoreWaits])
+  Promise.all([...childWaits, ...coreWaits, ...proxyRouterWaits, ...extensionStoreCoreWaits])
     .catch((error) => console.error(`退出时清理浏览器环境失败：${error.message}`))
     .finally(() => app.exit(0));
 });

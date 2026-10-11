@@ -11,6 +11,10 @@ const rendererSource = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'renderer', 'renderer.js'),
   'utf8',
 );
+const preloadSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'main', 'preload.js'),
+  'utf8',
+);
 
 function functionBody(source, declaration, nextDeclaration) {
   const start = source.indexOf(declaration);
@@ -45,7 +49,7 @@ test('relaunching an active profile restores and focuses its existing window', (
 
 test('running profiles accept name and startup URL edits while protecting runtime configuration', () => {
   const saveConfigBody = functionBody(mainSource, 'function profileSaveConfig(', 'function proxyForNode(');
-  assert.match(saveConfigBody, /connectionMode:/);
+  assert.match(saveConfigBody, /connectionMode,/);
   assert.match(saveConfigBody, /nodeId:/);
   assert.match(saveConfigBody, /note:/);
   assert.match(saveConfigBody, /color:/);
@@ -70,14 +74,76 @@ test('running profiles accept name and startup URL edits while protecting runtim
   assert.match(launchBody, /runtimeProfile\.startUrl = ensureUrl\(latestProfile\.startUrl/);
 });
 
+test('subscription connection mode persists its source and resolves a route only inside that source', () => {
+  const normalizer = functionBody(mainSource, 'function normalizeProfile(', 'function profileSaveConfig(');
+  assert.match(normalizer, /\['node', 'subscription'\]\.includes\(current\.connectionMode\)/);
+  assert.match(normalizer, /subscriptionId = connectionMode === 'subscription' \? safeText\(current\.subscriptionId\)/);
+  assert.match(normalizer, /state\.subscriptions\.some\(\(item\) => item\.id === subscriptionId\)/);
+  assert.match(normalizer, /node\.sourceId === subscriptionId/);
+
+  const saveConfig = functionBody(mainSource, 'function profileSaveConfig(', 'function proxyForNode(');
+  assert.match(saveConfig, /subscriptionId: connectionMode === 'subscription' \? safeText\(profile\?\.subscriptionId\) : null/);
+
+  const routeSelector = functionBody(mainSource, 'async function checkSubscriptionRoutes(', 'function notifyProfileAutoFailover(');
+  assert.match(routeSelector, /supportedSubscriptionNodes\(nodes, idValue, excluded\)/);
+  assert.match(routeSelector, /nodes\.find\(\(node\) => node\.id === candidate\.id\)\?\.sourceId === idValue/);
+  assert.match(routeSelector, /checkNodeConnections\(candidates\.map\(\(node\) => node\.id\), SUBSCRIPTION_ROUTE_CHECK_CONCURRENCY\)/);
+  assert.match(mainSource, /const CONNECTION_CHECK_BATCH_CONCURRENCY = 3;/);
+  assert.match(mainSource, /const SUBSCRIPTION_ROUTE_CHECK_CONCURRENCY = 10;/);
+  assert.match(mainSource, /async function checkNodeConnections\(nodeIds, concurrency = CONNECTION_CHECK_BATCH_CONCURRENCY\)/);
+  assert.match(routeSelector, /rankSubscriptionRoutes\(store\.get\(\)\.nodes, idValue, results, excluded\)/);
+  assert.match(mainSource, /function autoFailoverProfile\(profileId, failedNodeId\)/);
+  assert.match(mainSource, /handle\('profile:switch-subscription'/);
+});
+
+test('subscription automatic failover never falls back to direct or another subscription', () => {
+  const failover = functionBody(mainSource, 'async function autoFailoverProfile(', 'async function autoFailoverProfilesForNode(');
+  assert.match(failover, /profile\.connectionMode !== 'subscription'/);
+  assert.match(failover, /checkSubscriptionRoutes\(subscriptionId, initialNodeId \? \[initialNodeId\] : \[\]\)/);
+  assert.match(failover, /switchProfileSubscriptionRoute\(profileKey, subscriptionId, initialNodeId, route\)/);
+  assert.doesNotMatch(failover, /stopProfile\(|launchProfile\(/);
+  assert.match(failover, /notifyProfileAutoFailover\(profileKey, 'unavailable'/);
+  assert.doesNotMatch(failover, /expectedNodeId/);
+  assert.doesNotMatch(failover, /connectionMode = 'direct'/);
+});
+
+test('subscription auto failover retargets a stable loopback proxy without reloading either browser engine', () => {
+  const switcher = functionBody(mainSource, 'async function switchProfileSubscriptionRoute(', 'async function autoFailoverProfile(');
+  assert.match(switcher, /profileProxyRouters\.get\(profileId\)/);
+  assert.match(switcher, /router\.setRoute\(nextRoute\)/);
+  assert.match(switcher, /router\.retireCoreRuntime\(previousCoreRuntime\)/);
+  assert.doesNotMatch(switcher, /stopProfile\(|launchProfile\(|closeAllConnections\(|reload\(/);
+
+  const electronLaunch = functionBody(mainSource, 'async function launchWithElectron(', 'async function launchWithExternalEngine(');
+  const externalLaunch = functionBody(mainSource, 'async function launchWithExternalEngine(', 'function createProfileLaunchConfirmation(');
+  assert.match(electronLaunch, /proxyRouter\.proxyUrl/);
+  assert.match(externalLaunch, /proxyRouter\?\.proxyUrl/);
+  assert.match(mainSource, /host: '127\.0\.0\.1',[\s\S]*?createProfileProxyRouter/);
+  const launchBody = functionBody(mainSource, 'async function launchProfileInternal(profileId, options = {})', 'async function launchProfile(profileId, options = {})');
+  assert.match(launchBody, /if \(runtimeProfile\.connectionMode === 'subscription'\s*\|\|\s*\(engineMode === 'external' && node && \(node\.username \|\| node\.password\)\)\)\s*\{\s*profileProxyRouter = await createProfileProxyRouterForProfile/);
+});
+
+test('subscription node refresh and deletion preserve or clear automatic mode at the correct lifecycle boundary', () => {
+  const refresh = functionBody(mainSource, 'async function importSubscription(payload)', 'function renameSubscription(');
+  assert.match(refresh, /profile\.connectionMode === 'subscription' && profile\.subscriptionId === sourceId/);
+  assert.match(refresh, /if \(!isProfileRunning\(profile\.id\)\) profile\.nodeId = null/);
+
+  const deleteNode = functionBody(mainSource, "handle('node:delete'", "handle('node:check'");
+  assert.match(deleteNode, /profile\.connectionMode === 'subscription' && subscriptionIds\.has\(profile\.subscriptionId\)/);
+  assert.match(deleteNode, /return \{ \.\.\.profile, nodeId: null \}/);
+  assert.match(deleteNode, /connectionMode: 'direct', nodeId: null, subscriptionId: null/);
+});
+
 test('core startup checks for an exit race before and after browser launch', () => {
   const launchBody = functionBody(mainSource, 'async function launchProfileInternal(profileId, options = {})', 'async function launchProfile(profileId, options = {})');
-  assert.match(launchBody, /runtime\.exited\s*=\s*true/);
+  const coreTrackingBody = functionBody(mainSource, 'function trackProfileCoreRuntime(', 'function scheduleRuntimeCleanup(');
+  assert.match(coreTrackingBody, /runtime\.exited\s*=\s*true/);
+  assert.match(coreTrackingBody, /autoFailoverProfile\(profileId, runtime\.nodeId \|\| profile\.nodeId\)/);
   assert.match(launchBody, /isCoreRuntimeAlive\(coreRuntimeRecord\)/);
   assert.match(launchBody, /代理核心启动后立即退出/);
   assert.match(launchBody, /代理核心在浏览器启动期间退出/);
   assert.match(launchBody, /childHasExited\(external\)/);
-  assert.match(launchBody, /scheduleRuntimeCleanup\(profileId\)/);
+  assert.match(coreTrackingBody, /scheduleRuntimeCleanup\(profileId\)/);
   assert.match(mainSource, /function profileRequiresCore\(profileId\)/);
 });
 
@@ -102,18 +168,54 @@ test('application quit removes core config only after the child exits', () => {
 });
 
 test('late external child events cannot remove a replacement process record', () => {
-  const externalBody = functionBody(mainSource, 'async function launchWithExternalEngine(profile, node, enginePath)', 'function createProfileLaunchConfirmation(');
+  const externalBody = functionBody(mainSource, 'async function launchWithExternalEngine(profile, node, enginePath, proxyRouter = null)', 'function createProfileLaunchConfirmation(');
   assert.match(externalBody, /externalProcesses\.get\(profile\.id\) !== child/);
   assert.match(externalBody, /const isCurrent = externalProcesses\.get\(profile\.id\) === child/);
 });
 
 test('profile launch compares the current public IP before creating a browser and saves it only after success', () => {
   const launchBody = functionBody(mainSource, 'async function launchProfileInternal(profileId, options = {})', 'async function launchProfile(profileId, options = {})');
-  assert.ok(launchBody.indexOf('await checkProfileConnection(profileId)') < launchBody.indexOf('validateEnginePath(state.settings.enginePath)'));
+  assert.ok(launchBody.indexOf('await checkProfileConnection(profileId)') < launchBody.indexOf('resolveExternalEnginePath(state.settings.enginePath)'));
   assert.match(launchBody, /const previousIp = publicExitIp\(profile\.lastLaunchIp\)/);
   assert.match(launchBody, /createProfileLaunchConfirmation\(profile, previousIp, launchIp\)/);
+  assert.match(launchBody, /shouldConfirmProfileLaunchIpChange\(profile, options, previousIp, launchIp\)/);
   assert.match(launchBody, /if \(launchIp\) item\.lastLaunchIp = launchIp/);
   assert.match(mainSource, /lastLaunchIp: publicExitIp\(current\.lastLaunchIp \|\| existingProfile\?\.lastLaunchIp\)/);
+});
+
+test('saved engine mode controls launch while preserving external paths', () => {
+  const launchBody = functionBody(mainSource, 'async function launchProfileInternal(profileId, options = {})', 'async function launchProfile(profileId, options = {})');
+  assert.match(launchBody, /const engineMode = profile\.engineMode === 'external' \? 'external' : 'electron'/);
+  assert.match(launchBody, /const enginePath = engineMode === 'external' \? resolveExternalEnginePath\(state\.settings\.enginePath\) : ''/);
+  assert.match(launchBody, /if \(engineMode === 'external'\) \{\s*result = await launchWithExternalEngine/);
+  assert.match(launchBody, /if \(engineMode === 'external'\) \{\s*const external = externalProcesses\.get/);
+
+  const profileBody = functionBody(mainSource, 'function normalizeProfile(', 'function profileSaveConfig(');
+  assert.match(profileBody, /const requestedEngineMode = current\.engineMode === undefined/);
+  assert.match(profileBody, /requestedEngineMode === 'external' && !resolveExternalEnginePath\(state\.settings\.enginePath\)/);
+  const saveConfigBody = functionBody(mainSource, 'function profileSaveConfig(', 'function profileSaveNeedsStopped(');
+  assert.match(saveConfigBody, /engineMode: profile\?\.engineMode/);
+
+  const saveBody = functionBody(mainSource, 'async function saveApplicationSettings(input, sender)', 'const AGENT_PROFILE_SETTING_KEYS');
+  assert.match(saveBody, /const nextEngineMode = settings\.engineMode === undefined/);
+  assert.match(saveBody, /if \(requestedEnginePath && \(enginePathChanged \|\| nextEngineMode === 'external'\)\)\s*\{\s*nextEnginePath = validateEnginePath\(requestedEnginePath\)/);
+  assert.match(saveBody, /nextEngineMode === 'external' && !resolveExternalEnginePath\(requestedEnginePath\)/);
+  assert.match(saveBody, /if \(enginePathChanged\s*&& currentState\.profiles\.some/);
+  assert.doesNotMatch(saveBody, /nextEngineMode !== currentEngineMode \|\| enginePathChanged/);
+  assert.match(saveBody, /next\.settings\.engineMode = nextEngineMode/);
+  assert.match(mainSource, /next\.settings\.engineMode = 'external';[\s\S]*?next\.settings\.enginePath = installed\.path/);
+});
+
+test('launchpad engine switching only changes a stopped profile engine mode', () => {
+  const handlerBody = functionBody(mainSource, "handle('profile:set-engine-mode'", "handle('profile:save'");
+  assert.match(handlerBody, /safeProfileId\(payload\.profileId\)/);
+  assert.match(handlerBody, /engineMode !== 'electron' && engineMode !== 'external'/);
+  assert.match(handlerBody, /isProfileRunning\(profileId\) \|\| profileLaunches\.has\(profileId\) \|\| profileStops\.has\(profileId\)/);
+  assert.match(handlerBody, /engineMode === 'external' && !resolveExternalEnginePath\(currentState\.settings\.enginePath\)/);
+  assert.match(handlerBody, /current\.engineMode = engineMode/);
+  assert.match(handlerBody, /broadcastState\(\)/);
+  assert.doesNotMatch(handlerBody, /launchProfile\(|stopProfile\(|current\.(?:connectionMode|nodeId|note)\s*=/);
+  assert.match(preloadSource, /setProfileEngineMode: \(payload\) => invoke\('profile:set-engine-mode', payload\)/);
 });
 
 test('profile edits preserve private new-tab and search history without exposing it in public state', () => {
